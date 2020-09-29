@@ -1,0 +1,15 @@
+--- /suite/rpl/r/rpl_gtid_delete_domain.result	2020-10-05 15:32:29.685569380 +0200
++++ /suite/rpl/r/rpl_gtid_delete_domain.reject	2020-10-05 15:34:07.900341749 +0200
+@@ -29,8 +29,10 @@
+ master-bin.000001	329	Gtid	1	371	GTID 0-1-1
+ master-bin.000001	371	Query	1	460	use `test`; CREATE TABLE t (a INT)
+ master-bin.000001	460	Gtid	111	502	BEGIN GTID 11-111-1
+-master-bin.000001	502	Query	111	590	use `test`; INSERT INTO t SET a=1
+-master-bin.000001	590	Query	111	663	COMMIT
++master-bin.000001	502	Annotate_rows	111	546	INSERT INTO t SET a=1
++master-bin.000001	546	Table_map	111	590	table_id: # (test.t)
++master-bin.000001	590	Write_rows_v1	111	628	table_id: # flags: STMT_END_F
++master-bin.000001	628	Query	111	701	COMMIT
+ FLUSH BINARY LOGS;
+ PURGE BINARY LOGS TO 'master-bin.000002';;
+ show binlog events in 'master-bin.000002';;

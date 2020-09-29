@@ -51,9 +51,18 @@ START SLAVE IO_THREAD;
 
 --connection master
 # adjust the master binlog state
+
+--let $binlog_file= query_get_value(SHOW MASTER STATUS, File, 1)
+--replace_regex /Server ver: .*, Binlog ver: .*/Server ver: #, Binlog ver: #/ /table_id: [0-9]+/table_id: #/
+--eval show binlog events in '$binlog_file'
+
 FLUSH BINARY LOGS;
 --let $purge_to_binlog= query_get_value(SHOW MASTER STATUS, File, 1)
---eval PURGE BINARY LOGS TO '$purge_to_binlog';
+
+--eval PURGE BINARY LOGS TO '$purge_to_binlog'
+--replace_regex /Server ver: .*, Binlog ver: .*/Server ver: #, Binlog ver: #/ /table_id: [0-9]+/table_id: #/
+--eval show binlog events in '$purge_to_binlog'
+
 # with final removal of the extra domain
 --eval FLUSH BINARY LOGS DELETE_DOMAIN_ID=($extra_domain_id)
 SELECT @@global.gtid_binlog_pos, @@global.gtid_binlog_state;

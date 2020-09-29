@@ -21,8 +21,24 @@ Warning	1947	Specified GTID 0-1-1 conflicts with the binary log which contains a
 START SLAVE IO_THREAD;
 include/wait_for_slave_io_error.inc [errno=1236]
 connection master;
+show binlog events in 'master-bin.000001';
+Log_name	Pos	Event_type	Server_id	End_log_pos	Info
+master-bin.000001	4	Format_desc	1	256	Server ver: #, Binlog ver: #
+master-bin.000001	256	Gtid_list	1	285	[]
+master-bin.000001	285	Binlog_checkpoint	1	329	master-bin.000001
+master-bin.000001	329	Gtid	1	371	GTID 0-1-1
+master-bin.000001	371	Query	1	460	use `test`; CREATE TABLE t (a INT)
+master-bin.000001	460	Gtid	111	502	BEGIN GTID 11-111-1
+master-bin.000001	502	Query	111	590	use `test`; INSERT INTO t SET a=1
+master-bin.000001	590	Query	111	663	COMMIT
 FLUSH BINARY LOGS;
-PURGE BINARY LOGS TO 'master-bin.000002';;
+PURGE BINARY LOGS TO 'master-bin.000002';
+show binlog events in 'master-bin.000002';
+Log_name	Pos	Event_type	Server_id	End_log_pos	Info
+master-bin.000002	4	Format_desc	1	256	Server ver: #, Binlog ver: #
+master-bin.000002	256	Gtid_list	1	315	[11-111-1,0-1-1]
+master-bin.000002	315	Binlog_checkpoint	1	359	master-bin.000001
+master-bin.000002	359	Binlog_checkpoint	1	403	master-bin.000002
 FLUSH BINARY LOGS DELETE_DOMAIN_ID=(11);
 SELECT @@global.gtid_binlog_pos, @@global.gtid_binlog_state;
 @@global.gtid_binlog_pos	@@global.gtid_binlog_state

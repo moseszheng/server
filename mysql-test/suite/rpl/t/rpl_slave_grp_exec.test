@@ -145,7 +145,7 @@ ALTER TABLE t1 ENGINE=InnoDB;
 ALTER TABLE t2 ENGINE=InnoDB;
 ALTER TABLE t3 ENGINE=InnoDB;
 
---connection slave
+--sync_slave_with_master
 RENAME TABLE t3 TO t3_bak;
 
 --connection master
