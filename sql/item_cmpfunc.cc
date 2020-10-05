@@ -3375,15 +3375,15 @@ void Item_func_case::print(String *str, enum_query_type query_type)
   for (uint i= first_expr_num + 1 ; i < nwhens + first_expr_num + 1; i++)
   {
     str->append(STRING_WITH_LEN("when "));
-    args[i]->print_parenthesised(str, query_type, precedence());
+    args[i]->print(str, query_type);
     str->append(STRING_WITH_LEN(" then "));
-    args[i+nwhens]->print_parenthesised(str, query_type, precedence());
+    args[i+nwhens]->print(str, query_type);
     str->append(' ');
   }
   if (else_expr_num != -1)
   {
     str->append(STRING_WITH_LEN("else "));
-    args[else_expr_num]->print_parenthesised(str, query_type, precedence());
+    args[else_expr_num]->print(str, query_type);
     str->append(' ');
   }
   str->append(STRING_WITH_LEN("end"));
