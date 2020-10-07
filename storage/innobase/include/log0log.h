@@ -123,15 +123,6 @@ log_close(void);
 /** Read the durable LSN */
 #define log_get_flush_lsn() log_sys.get_flushed_lsn()
 
-/****************************************************************
-Get log_sys::max_modified_age_async. It is OK to read the value without
-holding log_sys::mutex because it is constant.
-@return max_modified_age_async */
-UNIV_INLINE
-lsn_t
-log_get_max_modified_age_async(void);
-/*================================*/
-
 /** Calculate the recommended highest values for lsn - last_checkpoint_lsn
 and lsn - buf_pool.get_oldest_modification().
 @param[in]	file_size	requested innodb_log_file_size
@@ -783,11 +774,6 @@ extern log_t	log_sys;
 #ifdef UNIV_DEBUG
 extern bool log_write_lock_own();
 #endif
-
-/** Gets the log capacity. It is OK to read the value without
-holding log_sys.mutex because it is constant.
-@return log capacity */
-inline lsn_t log_get_capacity(void) { return log_sys.log_capacity; }
 
 /** Calculate the offset of a log sequence number.
 @param[in]     lsn     log sequence number

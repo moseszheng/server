@@ -98,7 +98,9 @@ static lsn_t log_buf_pool_get_oldest_modification()
 {
   ut_ad(log_mutex_own());
   log_flush_order_mutex_enter();
-  lsn_t lsn= buf_pool.get_oldest_modification();
+  mysql_mutex_lock(&buf_pool.flush_list_mutex);
+  const lsn_t lsn= buf_pool.get_oldest_modification(0);
+  mysql_mutex_unlock(&buf_pool.flush_list_mutex);
   log_flush_order_mutex_exit();
 
   return lsn ? lsn : log_sys.get_lsn();
