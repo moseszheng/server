@@ -1830,9 +1830,6 @@ static os_thread_ret_t DECLARE_THREAD(buf_flush_page_cleaner)(void*)
 	}
 #endif /* UNIV_LINUX */
 
-	ulint	n_flushed_last = 0;
-	ulint	warn_interval = 1;
-	ulint	warn_count = 0;
 	ulint	curr_time = ut_time_ms();
 	ulint	n_flushed = 0;
 	ulint	last_activity = srv_get_activity_count();
@@ -1870,37 +1867,8 @@ static os_thread_ret_t DECLARE_THREAD(buf_flush_page_cleaner)(void*)
 		}
 
 		if (sleep_timeout) {
-			if (global_system_variables.log_warnings > 2
-			    && curr_time > next_loop_time + 3000
-			    && !(test_flags & TEST_SIGINT)) {
-				if (warn_count == 0) {
-					ib::info() << "page_cleaner: 1000ms"
-						" intended loop took "
-						<< 1000 + curr_time
-						   - next_loop_time
-						<< "ms. The settings might not"
-						" be optimal. (flushed="
-						<< n_flushed_last
-						<< " during the time.)";
-					if (warn_interval > 300) {
-						warn_interval = 600;
-					} else {
-						warn_interval *= 2;
-					}
-
-					warn_count = warn_interval;
-				} else {
-					--warn_count;
-				}
-			} else {
-				/* reset counter */
-				warn_interval = 1;
-				warn_count = 0;
-			}
-
 			/* no activity, slept enough */
 			buf_flush_lists(srv_io_capacity, LSN_MAX, &n_flushed);
-			n_flushed_last = n_flushed;
 
 			if (n_flushed) {
 				MONITOR_INC_VALUE_CUMULATIVE(
@@ -1938,8 +1906,6 @@ static os_thread_ret_t DECLARE_THREAD(buf_flush_page_cleaner)(void*)
 			n_flushed = page_cleaner.slot.n_flushed_list;
 
 			if (n_flushed) {
-				n_flushed_last += n_flushed;
-
 				MONITOR_INC_VALUE_CUMULATIVE(
 					MONITOR_FLUSH_ADAPTIVE_TOTAL_PAGE,
 					MONITOR_FLUSH_ADAPTIVE_COUNT,
