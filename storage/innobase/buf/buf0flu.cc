@@ -1391,10 +1391,8 @@ static bool buf_flush_do_batch(ulint max_n, lsn_t lsn, flush_counters_t *n)
     return false;
 
   const lsn_t last_lsn= log_sys.get_lsn();
-  const lsn_t log_lsn= (!lsn || lsn == LSN_MAX)
-    ? last_lsn : std::min(lsn, last_lsn);
-  if (log_lsn > log_sys.get_flushed_lsn())
-    log_write_up_to(log_lsn, true);
+  if (last_lsn > log_sys.get_flushed_lsn())
+    log_write_up_to(last_lsn, true);
 
   auto cond= lsn ? &buf_pool.done_flush_list : &buf_pool.done_flush_LRU;
 
