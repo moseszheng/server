@@ -1374,10 +1374,12 @@ void buf_flush_wait_batch_end(bool lru)
   if (n_flush)
   {
     auto cond= lru ? &buf_pool.done_flush_LRU : &buf_pool.done_flush_list;
+    tpool::tpool_wait_begin();
     thd_wait_begin(nullptr, THD_WAIT_DISKIO);
     do
       mysql_cond_wait(cond, &buf_pool.mutex);
     while (n_flush);
+    tpool::tpool_wait_end();
     thd_wait_end(nullptr);
     mysql_cond_broadcast(cond);
   }
@@ -1464,9 +1466,11 @@ ATTRIBUTE_COLD void buf_flush_wait_flushed(lsn_t lsn)
       }
     }
 
+    tpool::tpool_wait_begin();
     thd_wait_begin(nullptr, THD_WAIT_DISKIO);
     mysql_cond_wait(&buf_pool.done_flush_list, &buf_pool.flush_list_mutex);
     thd_wait_end(nullptr);
+    tpool::tpool_wait_end();
 
     MONITOR_INC(MONITOR_FLUSH_SYNC_WAITS);
   }
