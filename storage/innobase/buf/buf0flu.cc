@@ -1765,6 +1765,8 @@ static ulint pc_request_flush_slot(ulint max_n, lsn_t lsn)
 @return number of pages flushed */
 ATTRIBUTE_COLD static ulint buf_flush_sync_for_checkpoint(lsn_t lsn)
 {
+  static lsn_t margin;
+  const lsn_t orig_lsn= lsn;
   for (ulint n_flushed= 0;;)
   {
     pc_request_flush_slot(ULINT_UNDEFINED, lsn);
@@ -1782,9 +1784,14 @@ ATTRIBUTE_COLD static ulint buf_flush_sync_for_checkpoint(lsn_t lsn)
     mysql_cond_broadcast(&buf_pool.done_flush_list);
     mysql_mutex_unlock(&buf_pool.flush_list_mutex);
 
-    lsn= std::max(lsn + lsn_avg_rate * 3, target);
+    lsn= std::max(lsn, target);
+    lsn+= margin;
+    margin/= 2;
     if (measure >= lsn)
+    {
+      margin+= target - orig_lsn;
       return n_flushed;
+    }
   }
 }
 
