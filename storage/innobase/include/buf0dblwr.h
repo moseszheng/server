@@ -38,7 +38,7 @@ class buf_dblwr_t
   page_id_t block2= page_id_t(0, 0);
 
   /** mutex protecting the data members below */
-  mysql_mutex_t	mutex;
+  mysql_mutex_t mutex;
   /** condition variable for !batch_running */
   mysql_cond_t cond;
   /** whether a batch is being written from the doublewrite buffer */

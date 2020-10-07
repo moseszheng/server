@@ -58,7 +58,7 @@ void buf_flush_remove_pages(ulint id);
 @param id    tablespace identifier
 @return number dirty pages that there were for this tablespace */
 ulint buf_flush_dirty_pages(ulint id)
-	MY_ATTRIBUTE((warn_unused_result));
+  MY_ATTRIBUTE((warn_unused_result));
 
 /*******************************************************************//**
 Relocates a buffer control block on the flush_list.
@@ -95,7 +95,7 @@ buf_flush_init_for_writing(
 	bool			use_full_checksum);
 
 /** Write out dirty blocks from buf_pool.flush_list.
-@param max_n	wished maximum mumber of blocks flushed
+@param max_n    wished maximum mumber of blocks flushed
 @param lsn      stop on oldest_modification>=lsn
 @param n_processed the number of processed pages
 @retval true if a batch was queued successfully
@@ -103,11 +103,11 @@ buf_flush_init_for_writing(
 bool buf_flush_lists(ulint max_n, lsn_t lsn, ulint *n_processed= nullptr);
 
 /** Wait until a flush batch ends.
-@param[in]	lru	true=buf_pool.LRU; false=buf_pool.flush_list */
+@param lru    true=buf_pool.LRU; false=buf_pool.flush_list */
 void buf_flush_wait_batch_end(bool lru);
-/** Wait until a flush batch of the given lsn ends
-@param[in]	new_oldest	target oldest_modified_lsn to wait for */
-void buf_flush_wait_flushed(lsn_t new_oldest);
+/** Wait until all persistent pages are flushed up to a limit.
+@param lsn  buf_pool.get_oldest_modification(LSN_MAX) to wait for */
+ATTRIBUTE_COLD void buf_flush_wait_flushed(lsn_t lsn);
 /********************************************************************//**
 This function should be called at a mini-transaction commit, if a page was
 modified in it. Puts the block to the list of modified blocks, if it not

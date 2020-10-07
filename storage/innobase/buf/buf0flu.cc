@@ -1213,7 +1213,7 @@ static ulint buf_free_from_unzip_LRU_list_batch(ulint max)
 struct flush_counters_t
 {
   /** number of dirty pages flushed */
-  ulint	flushed;
+  ulint flushed;
   /** number of clean pages evicted */
   ulint evicted;
 };
@@ -1366,7 +1366,7 @@ static ulint buf_do_flush_list_batch(ulint max_n, lsn_t lsn)
 }
 
 /** Wait until a flush batch ends.
-@param[in]	lru	true=buf_pool.LRU; false=buf_pool.flush_list */
+@param lru    true=buf_pool.LRU; false=buf_pool.flush_list */
 void buf_flush_wait_batch_end(bool lru)
 {
   const auto &n_flush= lru ? buf_pool.n_flush_LRU : buf_pool.n_flush_list;
@@ -1439,28 +1439,28 @@ static bool buf_flush_do_batch(ulint max_n, lsn_t lsn, flush_counters_t *n)
   buf_dblwr.flush_buffered_writes();
 
   DBUG_PRINT("ib_buf", ("%s completed, " ULINTPF " pages",
-			lsn ? "flush_list" : "LRU flush", n->flushed));
+                        lsn ? "flush_list" : "LRU flush", n->flushed));
   return true;
 }
 
-/** Wait until a flush batch of the given lsn ends
-@param[in]	new_oldest	target oldest_modified_lsn to wait for */
-ATTRIBUTE_COLD void buf_flush_wait_flushed(lsn_t new_oldest)
+/** Wait until all persistent pages are flushed up to a limit.
+@param lsn  buf_pool.get_oldest_modification(LSN_MAX) to wait for */
+ATTRIBUTE_COLD void buf_flush_wait_flushed(lsn_t lsn)
 {
-  ut_ad(new_oldest);
+  ut_ad(lsn);
 
   mysql_mutex_lock(&buf_pool.flush_list_mutex);
 
   for (;;)
   {
-    if (new_oldest > buf_flush_sync_lsn.load(std::memory_order_relaxed))
+    if (lsn > buf_flush_sync_lsn.load(std::memory_order_relaxed))
     {
-      if (buf_pool.get_oldest_modification(LSN_MAX) >= new_oldest)
+      if (buf_pool.get_oldest_modification(LSN_MAX) >= lsn)
         break;
       if (UNIV_LIKELY(srv_flush_sync))
       {
-        buf_flush_sync_lsn.store(new_oldest, std::memory_order_release);
-	mysql_cond_signal(&buf_pool.do_flush_list);
+        buf_flush_sync_lsn.store(lsn, std::memory_order_release);
+        mysql_cond_signal(&buf_pool.do_flush_list);
       }
     }
 
@@ -1475,23 +1475,23 @@ ATTRIBUTE_COLD void buf_flush_wait_flushed(lsn_t new_oldest)
 }
 
 /** Write out dirty blocks from buf_pool.flush_list.
-@param max_n	wished maximum mumber of blocks flushed
+@param max_n    wished maximum mumber of blocks flushed
 @param lsn      stop on oldest_modification>=lsn
 @param n_processed the number of processed pages
 @retval true if a batch was queued successfully
 @retval false if another batch was already running */
 bool buf_flush_lists(ulint max_n, lsn_t lsn, ulint *n_processed)
 {
-	flush_counters_t	n;
+  flush_counters_t n;
 
-	bool success = buf_flush_do_batch(max_n, lsn, &n);
+  bool success= buf_flush_do_batch(max_n, lsn, &n);
 
-	if (n_processed) {
-		*n_processed = n.flushed;
-	}
+  if (n_processed)
+    *n_processed = n.flushed;
 
-	return success;
+  return success;
 }
+
 /** Wait for pending flushes to complete. */
 void buf_flush_wait_batch_end_acquiring_mutex(bool lru)
 {
@@ -1746,7 +1746,7 @@ page_cleaner_flush_pages_recommendation(ulint last_pages_in)
 }
 
 /** Initiate a flushing batch.
-@param max_n	maximum mumber of blocks flushed
+@param max_n    maximum mumber of blocks flushed
 @param lsn      oldest_modification limit
 @return ut_time_ms() at the start of the wait */
 static ulint pc_request_flush_slot(ulint max_n, lsn_t lsn)
