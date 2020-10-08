@@ -1446,26 +1446,52 @@ static bool buf_flush_do_batch(ulint max_n, lsn_t lsn, flush_counters_t *n)
 }
 
 /** Wait until all persistent pages are flushed up to a limit.
-@param lsn  buf_pool.get_oldest_modification(LSN_MAX) to wait for */
-ATTRIBUTE_COLD void buf_flush_wait_flushed(lsn_t lsn)
+@param sync_lsn   buf_pool.get_oldest_modification(LSN_MAX) to wait for
+@param async_lsn  soft target lsn (may be larger than sync_lsn) */
+ATTRIBUTE_COLD void buf_flush_wait_flushed(lsn_t sync_lsn, lsn_t async_lsn)
 {
-  ut_ad(lsn);
+  ut_ad(sync_lsn);
+  ut_ad(async_lsn >= sync_lsn);
+
+  if (recv_recovery_is_on())
+    recv_sys.apply(true);
+
+  if (UNIV_UNLIKELY(!buf_page_cleaner_is_active))
+  {
+    for (;;)
+    {
+      mysql_mutex_lock(&buf_pool.flush_list_mutex);
+      const lsn_t lsn= buf_pool.get_oldest_modification(sync_lsn);
+      mysql_mutex_unlock(&buf_pool.flush_list_mutex);
+      if (lsn >= sync_lsn)
+        return;
+      ulint n_pages;
+      buf_flush_lists(ULINT_UNDEFINED, sync_lsn, &n_pages);
+      buf_flush_wait_batch_end_acquiring_mutex(false);
+      if (n_pages)
+      {
+        MONITOR_INC_VALUE_CUMULATIVE(MONITOR_FLUSH_SYNC_TOTAL_PAGE,
+                                     MONITOR_FLUSH_SYNC_COUNT,
+                                     MONITOR_FLUSH_SYNC_PAGES, n_pages);
+      }
+      MONITOR_INC(MONITOR_FLUSH_SYNC_WAITS);
+    }
+    return;
+  }
 
   mysql_mutex_lock(&buf_pool.flush_list_mutex);
 
-  for (;;)
+  if (UNIV_LIKELY(srv_flush_sync))
   {
-    if (lsn > buf_flush_sync_lsn.load(std::memory_order_relaxed))
+    if (buf_flush_sync_lsn.load(std::memory_order_relaxed) < async_lsn)
     {
-      if (buf_pool.get_oldest_modification(LSN_MAX) >= lsn)
-        break;
-      if (UNIV_LIKELY(srv_flush_sync))
-      {
-        buf_flush_sync_lsn.store(lsn, std::memory_order_release);
-        mysql_cond_signal(&buf_pool.do_flush_list);
-      }
+      buf_flush_sync_lsn.store(async_lsn, std::memory_order_release);
+      mysql_cond_signal(&buf_pool.do_flush_list);
     }
+  }
 
+  while (buf_pool.get_oldest_modification(sync_lsn) < sync_lsn)
+  {
     tpool::tpool_wait_begin();
     thd_wait_begin(nullptr, THD_WAIT_DISKIO);
     mysql_cond_wait(&buf_pool.done_flush_list, &buf_pool.flush_list_mutex);
@@ -1769,8 +1795,6 @@ static ulint pc_request_flush_slot(ulint max_n, lsn_t lsn)
 @return number of pages flushed */
 ATTRIBUTE_COLD static ulint buf_flush_sync_for_checkpoint(lsn_t lsn)
 {
-  static lsn_t margin;
-  const lsn_t orig_lsn= lsn;
   for (ulint n_flushed= 0;;)
   {
     pc_request_flush_slot(ULINT_UNDEFINED, lsn);
@@ -1789,13 +1813,8 @@ ATTRIBUTE_COLD static ulint buf_flush_sync_for_checkpoint(lsn_t lsn)
     mysql_mutex_unlock(&buf_pool.flush_list_mutex);
 
     lsn= std::max(lsn, target);
-    lsn+= margin;
-    margin/= 2;
     if (measure >= lsn)
-    {
-      margin+= target - orig_lsn;
       return n_flushed;
-    }
   }
 }
 
@@ -1805,6 +1824,7 @@ ATTRIBUTE_COLD static ulint buf_flush_sync_for_checkpoint(lsn_t lsn)
 static void buf_flush_page_cleaner_disabled_loop()
 {
 	while (innodb_page_cleaner_disabled_debug
+	       && !buf_flush_sync_lsn.load(std::memory_order_relaxed)
 	       && srv_shutdown_state == SRV_SHUTDOWN_NONE) {
 		os_thread_sleep(100000);
 	}
@@ -1845,20 +1865,38 @@ static os_thread_ret_t DECLARE_THREAD(buf_flush_page_cleaner)(void*)
 	ulint	last_activity = srv_get_activity_count();
 	ulint	last_pages = 0;
 
-	for (ulint next_loop_time = curr_time + 1000;
-	     srv_shutdown_state <= SRV_SHUTDOWN_INITIATED;
-	     curr_time = ut_time_ms()) {
+	for (ulint next_time = curr_time + 1000;; curr_time = ut_time_ms()) {
 		lsn_t lsn_limit = buf_flush_sync_lsn.load(
 			std::memory_order_acquire);
+
+		if (UNIV_UNLIKELY(lsn_limit != 0)) {
+furious_flush:
+			n_flushed = buf_flush_sync_for_checkpoint(lsn_limit);
+
+			if (n_flushed) {
+				MONITOR_INC_VALUE_CUMULATIVE(
+					MONITOR_FLUSH_SYNC_TOTAL_PAGE,
+					MONITOR_FLUSH_SYNC_COUNT,
+					MONITOR_FLUSH_SYNC_PAGES,
+					n_flushed);
+			}
+
+			continue;
+		}
+
+		if (srv_shutdown_state > SRV_SHUTDOWN_INITIATED) {
+			break;
+		}
+
 		bool sleep_timeout;
 
 		/* The page_cleaner skips sleep if the server is
 		idle and there are no pending IOs in the buffer pool
 		and there is work to do. */
-		if (!lsn_limit && next_loop_time > curr_time
+		if (!lsn_limit && next_time > curr_time
 		    && (!n_flushed || !buf_pool.n_pend_reads
 			|| srv_check_activity(&last_activity))) {
-			const ulint sleep_ms = std::min<ulint>(next_loop_time
+			const ulint sleep_ms = std::min<ulint>(next_time
 							       - curr_time,
 							       1000);
 			timespec abstime;
@@ -1872,6 +1910,9 @@ static os_thread_ret_t DECLARE_THREAD(buf_flush_page_cleaner)(void*)
 				std::memory_order_relaxed);
 			mysql_mutex_unlock(&buf_pool.flush_list_mutex);
 			sleep_timeout = error != 0;
+			if (UNIV_UNLIKELY(lsn_limit != 0)) {
+				goto furious_flush;
+			}
 			if (srv_shutdown_state > SRV_SHUTDOWN_INITIATED) {
 				break;
 			}
@@ -1879,17 +1920,7 @@ static os_thread_ret_t DECLARE_THREAD(buf_flush_page_cleaner)(void*)
 			sleep_timeout = true;
 		}
 
-		if (UNIV_UNLIKELY(lsn_limit != 0)) {
-			n_flushed = buf_flush_sync_for_checkpoint(lsn_limit);
-
-			if (n_flushed) {
-				MONITOR_INC_VALUE_CUMULATIVE(
-					MONITOR_FLUSH_SYNC_TOTAL_PAGE,
-					MONITOR_FLUSH_SYNC_COUNT,
-					MONITOR_FLUSH_SYNC_PAGES,
-					n_flushed);
-			}
-		} else if (sleep_timeout) {
+		if (sleep_timeout) {
 			/* no activity, slept enough */
 			buf_flush_lists(srv_io_capacity, LSN_MAX, &n_flushed);
 
@@ -1926,7 +1957,7 @@ static os_thread_ret_t DECLARE_THREAD(buf_flush_page_cleaner)(void*)
 		}
 
 		if (!n_flushed) {
-			next_loop_time = curr_time + 1000;
+			next_time = curr_time + 1000;
 		}
 
 		ut_d(buf_flush_page_cleaner_disabled_loop());

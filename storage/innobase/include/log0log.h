@@ -512,10 +512,6 @@ private:
   std::atomic<lsn_t> lsn;
   /** the first guaranteed-durable log sequence number */
   std::atomic<lsn_t> flushed_to_disk_lsn;
-public:
-  /** first free offset within the log buffer in use */
-  size_t buf_free;
-private:
   /** set when there may be need to flush the log buffer, or
   preflush buffer pool pages, or initiate a log checkpoint.
   This must hold if lsn - last_checkpoint_lsn > max_checkpoint_age. */
@@ -525,6 +521,10 @@ public:
   /** mutex protecting the log */
   MY_ALIGNED(CACHE_LINE_SIZE)
   LogSysMutex mutex;
+  /** first free offset within the log buffer in use */
+  size_t buf_free;
+  /** recommended maximum size of buf, after which the buffer is flushed */
+  size_t max_buf_free;
   /** mutex to serialize access to the flush list when we are putting
   dirty blocks in the list. The idea behind this mutex is to be able
   to release log_sys.mutex during mtr_commit and still ensure that
@@ -536,8 +536,6 @@ public:
   /** log_buffer, writing data to file from this buffer.
   Before flushing write_buf is swapped with flush_buf */
   byte *flush_buf;
-  /** recommended maximum size of buf, after which the buffer is flushed */
-  size_t max_buf_free;
   /** Log file stuff. Protected by mutex. */
   struct file {
     /** format of the redo log: e.g., FORMAT_10_5 */
