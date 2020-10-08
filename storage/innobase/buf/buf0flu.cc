@@ -1504,6 +1504,23 @@ ATTRIBUTE_COLD void buf_flush_wait_flushed(lsn_t sync_lsn, lsn_t async_lsn)
   mysql_mutex_unlock(&buf_pool.flush_list_mutex);
 }
 
+/** If innodb_flush_sync=ON, initiate a furious flush.
+@param lsn buf_pool.get_oldest_modification(LSN_MAX) target */
+void buf_flush_ahead(lsn_t lsn)
+{
+  if (UNIV_LIKELY(srv_flush_sync) && UNIV_LIKELY(buf_page_cleaner_is_active) &&
+      buf_flush_sync_lsn.load(std::memory_order_relaxed) < lsn)
+  {
+    mysql_mutex_lock(&buf_pool.flush_list_mutex);
+    if (buf_flush_sync_lsn.load(std::memory_order_relaxed) < lsn)
+    {
+      buf_flush_sync_lsn.store(lsn, std::memory_order_release);
+      mysql_cond_signal(&buf_pool.do_flush_list);
+    }
+    mysql_mutex_unlock(&buf_pool.flush_list_mutex);
+  }
+}
+
 /** Write out dirty blocks from buf_pool.flush_list.
 @param max_n    wished maximum mumber of blocks flushed
 @param lsn      stop on oldest_modification>=lsn

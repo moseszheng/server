@@ -79,18 +79,6 @@ static time_t	log_last_margine_warning_time;
 #define LOG_BUF_FLUSH_MARGIN	(LOG_BUF_WRITE_MARGIN		\
 				 + (4U << srv_page_size_shift))
 
-/* This parameter controls asynchronous making of a new checkpoint; the value
-should be bigger than LOG_POOL_PREFLUSH_RATIO_SYNC */
-
-#define LOG_POOL_CHECKPOINT_RATIO_ASYNC	32
-
-/* This parameter controls synchronous preflushing of modified buffer pages */
-#define LOG_POOL_PREFLUSH_RATIO_SYNC	16
-
-/* The same ratio for asynchronous preflushing; this value should be less than
-the previous */
-#define LOG_POOL_PREFLUSH_RATIO_ASYNC	8
-
 /** Return the oldest modified LSN in buf_pool.flush_list,
 or the latest LSN if all pages are clean.
 @param lsn  log_sys.get_lsn()
@@ -344,12 +332,9 @@ part_loop:
 	srv_stats.log_write_requests.inc();
 }
 
-/************************************************************//**
-Closes the log.
-@return lsn */
-lsn_t
-log_close(void)
-/*===========*/
+/** Close the log at mini-transaction commit.
+@return whether buffer pool flushing is needed */
+bool log_close()
 {
 	byte*		log_block;
 
@@ -373,10 +358,9 @@ log_close(void)
 	}
 
 	const lsn_t lsn = log_sys.get_lsn();
-	const lsn_t oldest_lsn = log_buf_pool_get_oldest_modification(lsn);
 	const lsn_t checkpoint_age = lsn - log_sys.last_checkpoint_lsn;
 
-	if (checkpoint_age >= log_sys.log_capacity) {
+	if (UNIV_UNLIKELY(checkpoint_age >= log_sys.log_capacity)) {
 		DBUG_EXECUTE_IF(
 			"print_all_chkp_warnings",
 			log_has_printed_chkp_warning = false;);
@@ -392,20 +376,21 @@ log_close(void)
 				    << ", which exceeds the log capacity "
 				    << log_sys.log_capacity << ".";
 		}
+
+		log_sys.set_check_flush_or_checkpoint();
+		return lsn;
 	}
 
-	if (log_sys.check_flush_or_checkpoint()
-	    || checkpoint_age <= log_sys.max_modified_age_sync) {
-		goto function_exit;
-	}
+	const lsn_t oldest_lsn = log_buf_pool_get_oldest_modification(lsn);
+	const lsn_t target_lsn = oldest_lsn + log_sys.max_modified_age_sync;
 
-	if (lsn - oldest_lsn > log_sys.max_modified_age_sync
+	if (lsn > target_lsn
 	    || checkpoint_age > log_sys.max_checkpoint_age_async) {
 		log_sys.set_check_flush_or_checkpoint();
+		return true;
 	}
-function_exit:
 
-	return(lsn);
+	return false;
 }
 
 /** Calculate the recommended highest values for lsn - last_checkpoint_lsn
@@ -452,13 +437,9 @@ log_set_capacity(ulonglong file_size)
 
 	log_sys.log_capacity = smallest_capacity;
 
-	log_sys.max_modified_age_async = margin
-		- margin / LOG_POOL_PREFLUSH_RATIO_ASYNC;
-	log_sys.max_modified_age_sync = margin
-		- margin / LOG_POOL_PREFLUSH_RATIO_SYNC;
-
-	log_sys.max_checkpoint_age_async = margin - margin
-		/ LOG_POOL_CHECKPOINT_RATIO_ASYNC;
+	log_sys.max_modified_age_async = margin - margin / 8;
+	log_sys.max_modified_age_sync = margin - margin / 16;
+	log_sys.max_checkpoint_age_async = margin - margin / 32;
 	log_sys.max_checkpoint_age = margin;
 
 	log_mutex_exit();
@@ -1270,7 +1251,7 @@ bool log_checkpoint()
 	const lsn_t oldest_lsn = log_buf_pool_get_oldest_modification(end_lsn);
 
 	/* Because log also contains headers and dummy log records,
-	log_buf_pool_get_oldest_modification() will return log_sys.lsn
+	log_buf_pool_get_oldest_modification() will return end_lsn
 	if the buffer pool contains no dirty buffers.
 	We must make sure that the log is flushed up to that lsn.
 	If there are dirty buffers in the buffer pool, then our
@@ -1377,14 +1358,13 @@ static void log_checkpoint_margin()
   const lsn_t sync_flush_lsn= oldest_lsn + log_sys.max_modified_age_sync;
   const lsn_t async_checkpoint_lsn= log_sys.last_checkpoint_lsn +
     log_sys.max_checkpoint_age_async;
-  const lsn_t sync_checkpoint_lsn= log_sys.last_checkpoint_lsn +
-    log_sys.max_checkpoint_age;
-  if (lsn <= sync_checkpoint_lsn)
+  if (lsn <= async_checkpoint_lsn)
     log_sys.set_check_flush_or_checkpoint(false);
 
   log_mutex_exit();
 
-  buf_flush_wait_flushed(async_flush_lsn, sync_flush_lsn);
+  if (lsn > async_flush_lsn)
+    buf_flush_ahead(std::min(lsn, sync_flush_lsn));
 
   if (lsn > async_checkpoint_lsn)
     log_checkpoint();
@@ -1395,7 +1375,7 @@ Checks that there is enough free space in the log to start a new query step.
 Flushes the log buffer or makes a new checkpoint if necessary. NOTE: this
 function may only be called if the calling thread owns no synchronization
 objects! */
-void log_check_margins()
+ATTRIBUTE_COLD void log_check_margins()
 {
   do
   {

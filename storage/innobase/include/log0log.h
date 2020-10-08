@@ -111,12 +111,9 @@ log_write_low(
 /*==========*/
 	const byte*	str,		/*!< in: string */
 	ulint		str_len);	/*!< in: string length */
-/************************************************************//**
-Closes the log.
-@return lsn */
-lsn_t
-log_close(void);
-/*===========*/
+/** Close the log at mini-transaction commit.
+@return whether buffer pool flushing is needed */
+bool log_close();
 /** Read the current LSN. */
 #define log_get_lsn() log_sys.get_lsn()
 
@@ -172,8 +169,7 @@ Checks that there is enough free space in the log to start a new query step.
 Flushes the log buffer or makes a new checkpoint if necessary. NOTE: this
 function may only be called if the calling thread owns no synchronization
 objects! */
-void
-log_check_margins(void);
+ATTRIBUTE_COLD void log_check_margins();
 
 /************************************************************//**
 Gets a log block flush bit.
@@ -710,7 +706,10 @@ public:
   { flushed_to_disk_lsn.store(lsn, std::memory_order_relaxed); }
 
   bool check_flush_or_checkpoint() const
-  { return check_flush_or_checkpoint_.load(std::memory_order_relaxed); }
+  {
+    return UNIV_UNLIKELY
+      (check_flush_or_checkpoint_.load(std::memory_order_relaxed));
+  }
   void set_check_flush_or_checkpoint(bool flag= true)
   { check_flush_or_checkpoint_.store(flag, std::memory_order_relaxed); }
 

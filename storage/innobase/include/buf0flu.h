@@ -109,6 +109,10 @@ void buf_flush_wait_batch_end(bool lru);
 @param sync_lsn   buf_pool.get_oldest_modification(LSN_MAX) to wait for
 @param async_lsn  soft target lsn (may be larger than sync_lsn) */
 ATTRIBUTE_COLD void buf_flush_wait_flushed(lsn_t sync_lsn, lsn_t async_lsn);
+/** If innodb_flush_sync=ON, initiate a furious flush.
+@param lsn buf_pool.get_oldest_modification(LSN_MAX) target */
+void buf_flush_ahead(lsn_t lsn);
+
 /********************************************************************//**
 This function should be called at a mini-transaction commit, if a page was
 modified in it. Puts the block to the list of modified blocks, if it not
