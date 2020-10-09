@@ -4904,9 +4904,11 @@ locks_ok_del_marked:
 			row_unlock_for_mysql(prebuilt, TRUE);
 		}
 		goto next_rec;
+	case ICP_ABORTED_BY_USER:
+		err = DB_INTERRUPTED;
+		goto idx_cond_failed;
 	case ICP_OUT_OF_RANGE:
-        case ICP_ABORTED_BY_USER:
-        case ICP_ERROR:
+	case ICP_ERROR:
 		err = DB_RECORD_NOT_FOUND;
 		goto idx_cond_failed;
 	case ICP_MATCH:
