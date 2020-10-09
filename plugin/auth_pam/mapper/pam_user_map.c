@@ -31,6 +31,8 @@ These comments are written to the syslog as 'authpriv.debug'
 and usually end up in /var/log/secure file.
 */
 
+#include <my_config.h>
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <ctype.h>
@@ -72,8 +74,13 @@ static const char debug_keyword[]= "debug";
 
 static int populate_user_groups(const char *user, gid_t **groups)
 {
+#ifdef HAVE_POSIX_GETGROUPLIST
   gid_t user_group_id;
   gid_t *loc_groups= *groups;
+#else
+  int user_group_id;
+  int *loc_groups= (int*)*groups;
+#endif
   int ng;
 
   {
@@ -88,12 +95,16 @@ static int populate_user_groups(const char *user, gid_t **groups)
   {
     /* The rare case when the user is present in more than */
     /* GROUP_BUFFER_SIZE groups.                           */
+#ifdef HAVE_POSIX_GETGROUPLIST
     loc_groups= (gid_t *) malloc(ng * sizeof (gid_t));
+#else
+    loc_groups= (int *) malloc(ng * sizeof (gid_t));
+#endif
     if (!loc_groups)
       return 0;
 
     (void) getgrouplist(user, user_group_id, loc_groups, &ng);
-    *groups= loc_groups;
+    *groups= (gid_t*)loc_groups;
   }
 
   return ng;

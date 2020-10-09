@@ -1031,3 +1031,25 @@ IF(NOT MSVC)
   HAVE_FALLOC_PUNCH_HOLE_AND_KEEP_SIZE
   )
 ENDIF()
+
+# Check whether getgrouplist uses git_t for second and third arguments.
+SET(CMAKE_REQUIRED_FLAGS -Werror)
+CHECK_C_SOURCE_COMPILES(
+"
+#ifdef HAVE_GRP_H
+#include <grp.h>
+#endif
+#ifdef HAVE_UNISTD_H
+#include <unistd.h>
+#endif
+int main() {
+  char *arg_1;
+  gid_t arg_2, arg_3;
+  int arg_4;
+  (void)getgrouplist(arg_1,arg_2,&arg_3,arg_4);
+  return 0;
+}
+"
+HAVE_POSIX_GETGROUPLIST
+)
+SET(CMAKE_REQUIRED_FLAGS)
