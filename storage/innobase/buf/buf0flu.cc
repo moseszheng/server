@@ -201,7 +201,7 @@ void buf_flush_remove_pages(ulint id)
 
     for (buf_page_t *bpage= UT_LIST_GET_LAST(buf_pool.flush_list); bpage; )
     {
-      ut_a(bpage->in_file());
+      ut_ad(bpage->in_file());
       buf_page_t *prev= UT_LIST_GET_PREV(list, bpage);
 
       const page_id_t bpage_id(bpage->id());
@@ -1081,84 +1081,67 @@ static void buf_flush_freed_pages(fil_space_t *space)
 
 /** Flushes to disk all flushable pages within the flush area
 and also write zeroes or punch the hole for the freed ranges of pages.
+@param space       tablespace
 @param page_id     page identifier
+@param contiguous  whether to consider contiguous areas of pages
 @param lru         true=buf_pool.LRU; false=buf_pool.flush_list
 @param n_flushed   number of pages flushed so far in this batch
 @param n_to_flush  maximum number of pages we are allowed to flush
 @return number of pages flushed */
-static ulint buf_flush_try_neighbors(const page_id_t page_id, bool lru,
+static ulint buf_flush_try_neighbors(fil_space_t *space,
+                                     const page_id_t page_id,
+                                     bool contiguous, bool lru,
                                      ulint n_flushed, ulint n_to_flush)
 {
-	ulint		count = 0;
+  ut_ad(space->id == page_id.space());
 
-	fil_space_t* space = fil_space_acquire_for_io(page_id.space());
-	if (!space) {
-		return 0;
-	}
+  ulint count= 0;
+  page_id_t id= page_id;
+  page_id_t high= buf_flush_check_neighbors(*space, id, contiguous, lru);
 
-        /* Flush the freed ranges while flushing the neighbors */
-        buf_flush_freed_pages(space);
+  ut_ad(page_id >= id);
+  ut_ad(page_id < high);
 
-	const auto neighbors= srv_flush_neighbors;
+  for (ulint id_fold= id.fold(); id < high; ++id, ++id_fold)
+  {
+    if (count + n_flushed >= n_to_flush)
+    {
+      if (id > page_id)
+        break;
+      /* If the page whose neighbors we are flushing has not been
+      flushed yet, we must flush the page that we selected originally. */
+      id= page_id;
+      id_fold= id.fold();
+    }
 
-	page_id_t id = page_id;
-	page_id_t high = (!neighbors
-			  || UT_LIST_GET_LEN(buf_pool.LRU)
-			  < BUF_LRU_OLD_MIN_LEN
-			  || !space->is_rotational())
-		? id + 1 /* Flush the minimum. */
-		: buf_flush_check_neighbors(*space, id, neighbors == 1, lru);
+    mysql_mutex_lock(&buf_pool.mutex);
 
-	ut_ad(page_id >= id);
-	ut_ad(page_id < high);
+    if (buf_page_t *bpage= buf_pool.page_hash_get_low(id, id_fold))
+    {
+      ut_ad(bpage->in_file());
+      /* We avoid flushing 'non-old' blocks in an LRU flush,
+      because the flushed blocks are soon freed */
+      if (!lru || id == page_id || bpage->is_old())
+      {
+        if (bpage->ready_for_flush() && buf_flush_page(bpage, lru, space))
+        {
+          ++count;
+          continue;
+        }
+      }
+    }
 
-	for (; id < high; ++id) {
-		if ((count + n_flushed) >= n_to_flush) {
+    mysql_mutex_unlock(&buf_pool.mutex);
+  }
 
-			/* We have already flushed enough pages and
-			should call it a day. There is, however, one
-			exception. If the page whose neighbors we
-			are flushing has not been flushed yet then
-			we'll try to flush the victim that we
-			selected originally. */
-			if (id <= page_id) {
-				id = page_id;
-			} else {
-				break;
-			}
-		}
+  if (auto n= count - 1)
+  {
+    MONITOR_INC_VALUE_CUMULATIVE(MONITOR_FLUSH_NEIGHBOR_TOTAL_PAGE,
+                                 MONITOR_FLUSH_NEIGHBOR_COUNT,
+                                 MONITOR_FLUSH_NEIGHBOR_PAGES, n);
+  }
 
-		const ulint fold = id.fold();
-
-		mysql_mutex_lock(&buf_pool.mutex);
-
-		if (buf_page_t* bpage = buf_pool.page_hash_get_low(id, fold)) {
-			ut_a(bpage->in_file());
-			/* We avoid flushing 'non-old' blocks in an LRU flush,
-			because the flushed blocks are soon freed */
-			if (!lru || id == page_id || bpage->is_old()) {
-				if (bpage->ready_for_flush()
-				    && buf_flush_page(bpage, lru, space)) {
-					++count;
-					continue;
-				}
-			}
-		}
-
-		mysql_mutex_unlock(&buf_pool.mutex);
-	}
-
-	space->release_for_io();
-
-	if (count > 1) {
-		MONITOR_INC_VALUE_CUMULATIVE(
-			MONITOR_FLUSH_NEIGHBOR_TOTAL_PAGE,
-			MONITOR_FLUSH_NEIGHBOR_COUNT,
-			MONITOR_FLUSH_NEIGHBOR_PAGES,
-			(count - 1));
-	}
-
-	return(count);
+  return count;
 }
 
 /*******************************************************************//**
@@ -1218,6 +1201,14 @@ struct flush_counters_t
   ulint evicted;
 };
 
+static fil_space_t *buf_flush_space(const uint32_t id)
+{
+  fil_space_t *space= fil_space_acquire_for_io(id);
+  if (space)
+    buf_flush_freed_pages(space);
+  return space;
+}
+
 /** Flush dirty blocks from the end of the LRU list.
 @param max   maximum number of blocks to make available in buf_pool.free
 @param n     counts of flushed and evicted pages */
@@ -1225,9 +1216,14 @@ static void buf_flush_LRU_list_batch(ulint max, flush_counters_t *n)
 {
   ulint scanned= 0;
   ulint free_limit= srv_LRU_scan_depth;
+
   mysql_mutex_assert_owner(&buf_pool.mutex);
   if (buf_pool.withdraw_target && buf_pool.curr_size < buf_pool.old_size)
     free_limit+= buf_pool.withdraw_target - UT_LIST_GET_LEN(buf_pool.withdraw);
+
+  const auto neighbors= UT_LIST_GET_LEN(buf_pool.LRU) < BUF_LRU_OLD_MIN_LEN
+    ? 0 : srv_flush_neighbors;
+  fil_space_t *space= nullptr;
 
   for (buf_page_t *bpage= UT_LIST_GET_LAST(buf_pool.LRU);
        bpage && n->flushed + n->evicted < max &&
@@ -1250,9 +1246,28 @@ static void buf_flush_LRU_list_batch(ulint max, flush_counters_t *n)
       /* Block is ready for flush. Dispatch an IO request. The IO
       helper thread will put it on free list in IO completion routine. */
       const page_id_t page_id(bpage->id());
-      mysql_mutex_unlock(&buf_pool.mutex);
-      n->flushed+= buf_flush_try_neighbors(page_id, true, n->flushed, max);
-      mysql_mutex_lock(&buf_pool.mutex);
+      const uint32_t space_id= page_id.space();
+      if (!space || space->id != space_id)
+      {
+        if (space)
+          space->release_for_io();
+        space= buf_flush_space(space_id);
+        if (!space)
+          continue;
+      }
+      if (neighbors && space->is_rotational())
+      {
+        mysql_mutex_unlock(&buf_pool.mutex);
+        n->flushed+= buf_flush_try_neighbors(space, page_id, neighbors == 1,
+                                             true, n->flushed, max);
+reacquire_mutex:
+        mysql_mutex_lock(&buf_pool.mutex);
+      }
+      else if (buf_flush_page(bpage, true, space))
+      {
+        ++n->flushed;
+        goto reacquire_mutex;
+      }
     }
     else
       /* Can't evict or dispatch this block. Go to previous. */
@@ -1260,6 +1275,9 @@ static void buf_flush_LRU_list_batch(ulint max, flush_counters_t *n)
   }
 
   buf_pool.lru_hp.set(nullptr);
+
+  if (space)
+    space->release_for_io();
 
   /* We keep track of all flushes happening as part of LRU flush. When
   estimating the desired rate at which flush_list should be flushed,
@@ -1310,6 +1328,10 @@ static ulint buf_do_flush_list_batch(ulint max_n, lsn_t lsn)
 
   mysql_mutex_assert_owner(&buf_pool.mutex);
 
+  const auto neighbors= UT_LIST_GET_LEN(buf_pool.LRU) < BUF_LRU_OLD_MIN_LEN
+    ? 0 : srv_flush_neighbors;
+  fil_space_t *space= nullptr;
+
   /* Start from the end of the list looking for a suitable block to be
   flushed. */
   mysql_mutex_lock(&buf_pool.flush_list_mutex);
@@ -1327,7 +1349,7 @@ static ulint buf_do_flush_list_batch(ulint max_n, lsn_t lsn)
     const lsn_t oldest_modification= bpage->oldest_modification();
     if (oldest_modification >= lsn)
       break;
-    ut_a(oldest_modification);
+    ut_ad(oldest_modification);
 
     buf_page_t *prev= UT_LIST_GET_PREV(list, bpage);
     buf_pool.flush_hp.set(prev);
@@ -1339,9 +1361,28 @@ static ulint buf_do_flush_list_batch(ulint max_n, lsn_t lsn)
     if (flushed)
     {
       const page_id_t page_id(bpage->id());
-      mysql_mutex_unlock(&buf_pool.mutex);
-      count+= buf_flush_try_neighbors(page_id, false, count, max_n);
-      mysql_mutex_lock(&buf_pool.mutex);
+      const uint32_t space_id= page_id.space();
+      if (!space || space->id != space_id)
+      {
+        if (space)
+          space->release_for_io();
+        space= buf_flush_space(space_id);
+        if (!space)
+          continue;
+      }
+      if (neighbors && space->is_rotational())
+      {
+        mysql_mutex_unlock(&buf_pool.mutex);
+        count+= buf_flush_try_neighbors(space, page_id, neighbors == 1,
+                                             false, count, max_n);
+reacquire_mutex:
+        mysql_mutex_lock(&buf_pool.mutex);
+      }
+      else if (buf_flush_page(bpage, false, space))
+      {
+        ++count;
+        goto reacquire_mutex;
+      }
     }
 
     mysql_mutex_lock(&buf_pool.flush_list_mutex);
@@ -1350,6 +1391,9 @@ static ulint buf_do_flush_list_batch(ulint max_n, lsn_t lsn)
 
   buf_pool.flush_hp.set(nullptr);
   mysql_mutex_unlock(&buf_pool.flush_list_mutex);
+
+  if (space)
+    space->release_for_io();
 
   if (scanned)
     MONITOR_INC_VALUE_CUMULATIVE(MONITOR_FLUSH_BATCH_SCANNED,
@@ -1452,6 +1496,7 @@ ATTRIBUTE_COLD void buf_flush_wait_flushed(lsn_t sync_lsn, lsn_t async_lsn)
 {
   ut_ad(sync_lsn);
   ut_ad(async_lsn >= sync_lsn);
+  ut_ad(!log_mutex_own());
 
   if (recv_recovery_is_on())
     recv_sys.apply(true);
@@ -1508,6 +1553,8 @@ ATTRIBUTE_COLD void buf_flush_wait_flushed(lsn_t sync_lsn, lsn_t async_lsn)
 @param lsn buf_pool.get_oldest_modification(LSN_MAX) target */
 void buf_flush_ahead(lsn_t lsn)
 {
+  ut_ad(!log_mutex_own());
+
   if (UNIV_LIKELY(srv_flush_sync) && UNIV_LIKELY(buf_page_cleaner_is_active) &&
       buf_flush_sync_lsn.load(std::memory_order_relaxed) < lsn)
   {

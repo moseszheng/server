@@ -519,7 +519,6 @@ static void buf_dblwr_check_page_lsn(const buf_page_t &b, const byte *page)
     space->release_for_io();
   }
 }
-#endif /* UNIV_DEBUG */
 
 /** Check the LSN values on the page with which this block is associated. */
 static void buf_dblwr_check_block(const buf_page_t *bpage)
@@ -551,6 +550,7 @@ static void buf_dblwr_check_block(const buf_page_t *bpage)
                 " data files.";
   }
 }
+#endif /* UNIV_DEBUG */
 
 bool buf_dblwr_t::flush_buffered_writes(const ulint size)
 {
@@ -574,7 +574,7 @@ bool buf_dblwr_t::flush_buffered_writes(const ulint size)
 
   /* Now safe to release the mutex. */
   mysql_mutex_unlock(&mutex);
-
+#ifdef UNIV_DEBUG
   for (ulint len2= 0, i= 0; i < old_first_free; len2 += srv_page_size, i++)
   {
     buf_page_t *bpage= buf_block_arr[i].bpage;
@@ -588,7 +588,7 @@ bool buf_dblwr_t::flush_buffered_writes(const ulint size)
     buf_dblwr_check_block(bpage);
     ut_d(buf_dblwr_check_page_lsn(*bpage, write_buf + len2));
   }
-
+#endif /* UNIV_DEBUG */
   /* Write out the first block of the doublewrite buffer */
   fil_io_t fio= fil_io(IORequestWrite, true, block1, 0, 0,
                        std::min(size, old_first_free) << srv_page_size_shift,
