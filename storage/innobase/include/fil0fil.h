@@ -872,6 +872,9 @@ public:
     std::lock_guard<std::mutex> freed_lock(freed_range_mutex);
     freed_ranges.add_range(range);
   }
+
+  /** @return the size in pages (0 if unreadable) */
+  inline ulint get_size();
 #endif /*!UNIV_INNOCHECKSUM */
 
 };
@@ -1325,11 +1328,10 @@ public:
 					has issued a warning about
 					potential space_id reuse */
 
-	/** Trigger a call to fil_node_t::read_page0()
-	@param[in]	id	tablespace identifier
-	@return	tablespace
-	@retval	NULL	if the tablespace does not exist or cannot be read */
-	fil_space_t* read_page0(ulint id);
+  /** Trigger a call to fil_node_t::read_page0()
+  @param space	tablespace
+  @return whether we were able to read the tablespace */
+  bool read_page0(fil_space_t *space);
 
   /** Return the next tablespace from rotation_list.
   @param space   previous tablespace (NULL to start from the start)
@@ -1344,6 +1346,18 @@ public:
 
 /** The tablespace memory cache. */
 extern fil_system_t	fil_system;
+
+/** @return the size in pages (0 if unreadable) */
+inline ulint fil_space_t::get_size()
+{
+  if (!size)
+  {
+    mutex_enter(&fil_system.mutex);
+    fil_system.read_page0(this);
+    mutex_exit(&fil_system.mutex);
+  }
+  return size;
+}
 
 /** Update the data structures on I/O completion */
 inline void fil_node_t::complete_io(bool write)
@@ -1429,15 +1443,6 @@ fil_space_free(
 @param	flags	tablespace flags */
 UNIV_INTERN
 void fil_space_set_recv_size_and_flags(ulint id, ulint size, uint32_t flags);
-
-/*******************************************************************//**
-Returns the size of the space in pages. The tablespace must be cached in the
-memory cache.
-@return space size, 0 if space not found */
-ulint
-fil_space_get_size(
-/*===============*/
-	ulint	id);	/*!< in: space id */
 
 /** Opens all system tablespace data files. They stay open until the
 database server shutdown. This should be called at a server startup after the
@@ -1713,10 +1718,8 @@ struct fil_io_t
 /** Reads or writes data. This operation could be asynchronous (aio).
 
 @param[in]	type		IO context
-@param[in]	sync		true if synchronous aio is desired
-@param[in]	page_id		page id
-@param[in]	zip_size	ROW_FORMAT=COMPRESSED page size, or 0
-@param[in]	byte_offset	remainder of offset in bytes; in aio this
+@param[in,out]	space		tablespace
+@param[in]	byte_offset	offset in bytes; in aio this
 				must be divisible by the OS block size
 @param[in]	len		how many bytes to read or write; this must
 				not cross a file boundary; in aio this must
@@ -1724,24 +1727,18 @@ struct fil_io_t
 @param[in,out]	buf		buffer where to store read data or from where
 				to write; in aio this must be appropriately
 				aligned
-@param[in]	message		message for aio handler if non-sync aio
-				used, else ignored
-@param[in]	ignore		whether to ignore errors
-@param[in]	punch_hole	punch the hole to the file for page_compressed
-				tablespace
+@param[in,out]	bpage		buffer pool page descriptor
+				(for type.is_async() completion callback)
 @return status and file descriptor */
 fil_io_t
 fil_io(
 	const IORequest&	type,
-	bool			sync,
-	const page_id_t		page_id,
-	ulint			zip_size,
-	ulint			byte_offset,
+	fil_space_t*		space,
+	os_offset_t		byte_offset,
 	ulint			len,
 	void*			buf,
-	void*			message,
-	bool			ignore = false,
-	bool			punch_hole = false);
+	buf_page_t*		bpage)
+	MY_ATTRIBUTE((nonnull(2)));
 
 /**********************************************************************//**
 Waits for an aio operation to complete. This function is used to write the
@@ -1856,23 +1853,6 @@ inline bool fil_names_write_if_was_clean(fil_space_t* space)
 	}
 
 	return(was_clean);
-}
-
-/** During crash recovery, open a tablespace if it had not been opened
-yet, to get valid size and flags.
-@param[in,out]	space	tablespace */
-inline void fil_space_open_if_needed(fil_space_t* space)
-{
-	ut_ad(recv_recovery_is_on());
-
-	if (space->size == 0) {
-		/* Initially, size and flags will be set to 0,
-		until the files are opened for the first time.
-		fil_space_get_size() will open the file
-		and adjust the size and flags. */
-		ut_d(ulint size	=) fil_space_get_size(space->id);
-		ut_ad(size == space->size);
-	}
 }
 
 /** On a log checkpoint, reset fil_names_dirty_and_write() flags
