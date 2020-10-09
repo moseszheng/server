@@ -188,8 +188,6 @@ enum latch_level_t {
 
 	SYNC_ANY_LATCH,
 
-	SYNC_BUF_PAGE_HASH,
-
 	SYNC_POOL,
 	SYNC_POOL_MANAGER,
 
