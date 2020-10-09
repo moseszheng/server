@@ -1501,11 +1501,12 @@ ATTRIBUTE_COLD void buf_flush_wait_flushed(lsn_t sync_lsn, lsn_t async_lsn)
   if (recv_recovery_is_on())
     recv_sys.apply(true);
 
+  mysql_mutex_lock(&buf_pool.flush_list_mutex);
+
   if (UNIV_UNLIKELY(!buf_page_cleaner_is_active))
   {
     for (;;)
     {
-      mysql_mutex_lock(&buf_pool.flush_list_mutex);
       const lsn_t lsn= buf_pool.get_oldest_modification(sync_lsn);
       mysql_mutex_unlock(&buf_pool.flush_list_mutex);
       if (lsn >= sync_lsn)
@@ -1520,13 +1521,11 @@ ATTRIBUTE_COLD void buf_flush_wait_flushed(lsn_t sync_lsn, lsn_t async_lsn)
                                      MONITOR_FLUSH_SYNC_PAGES, n_pages);
       }
       MONITOR_INC(MONITOR_FLUSH_SYNC_WAITS);
+      mysql_mutex_lock(&buf_pool.flush_list_mutex);
     }
     return;
   }
-
-  mysql_mutex_lock(&buf_pool.flush_list_mutex);
-
-  if (UNIV_LIKELY(srv_flush_sync))
+  else if (UNIV_LIKELY(srv_flush_sync))
   {
     if (buf_flush_sync_lsn.load(std::memory_order_relaxed) < async_lsn)
     {
@@ -1929,6 +1928,7 @@ static os_thread_ret_t DECLARE_THREAD(buf_flush_page_cleaner)(void*)
 	ulint	last_activity = srv_get_activity_count();
 	ulint	last_pages = 0;
 
+retry:
 	for (ulint next_time = curr_time + 1000;; curr_time = ut_time_ms()) {
 		lsn_t lsn_limit = buf_flush_sync_lsn.load(
 			std::memory_order_acquire);
@@ -2032,7 +2032,13 @@ furious_flush:
 		buf_flush_wait_batch_end_acquiring_mutex(false);
 	}
 
+	mysql_mutex_lock(&buf_pool.flush_list_mutex);
+	if (buf_flush_sync_lsn.load(std::memory_order_relaxed)) {
+		mysql_mutex_unlock(&buf_pool.flush_list_mutex);
+		goto retry;
+	}
 	buf_page_cleaner_is_active = false;
+	mysql_mutex_unlock(&buf_pool.flush_list_mutex);
 
 	my_thread_end();
 	/* We count the number of threads in os_thread_exit(). A created
