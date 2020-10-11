@@ -461,7 +461,7 @@ void mtr_t::commit()
     m_memo.for_each_block_in_reverse(CIterate<ReleaseLatches>());
 
     if (lsns.second)
-      buf_flush_ahead(m_commit_lsn);
+      buf_flush_ahead(m_commit_lsn * 2 - lsns.first);
   }
   else
     m_memo.for_each_block_in_reverse(CIterate<ReleaseAll>());

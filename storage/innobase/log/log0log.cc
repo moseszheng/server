@@ -1232,15 +1232,9 @@ bool log_checkpoint()
 
 	switch (srv_file_flush_method) {
 	case SRV_NOSYNC:
-		break;
-	case SRV_O_DSYNC:
-	case SRV_FSYNC:
-	case SRV_LITTLESYNC:
-	case SRV_O_DIRECT:
 	case SRV_O_DIRECT_NO_FSYNC:
-#ifdef _WIN32
-	case SRV_ALL_O_DIRECT_FSYNC:
-#endif
+		break;
+	default:
 		fil_flush_file_spaces();
 	}
 
@@ -1355,7 +1349,6 @@ static void log_checkpoint_margin()
   const lsn_t lsn= log_sys.get_lsn();
   const lsn_t oldest_lsn= log_buf_pool_get_oldest_modification(lsn);
   const lsn_t async_flush_lsn= oldest_lsn + log_sys.max_modified_age_async;
-  const lsn_t sync_flush_lsn= oldest_lsn + log_sys.max_modified_age_sync;
   const lsn_t async_checkpoint_lsn= log_sys.last_checkpoint_lsn +
     log_sys.max_checkpoint_age_async;
   if (lsn <= async_checkpoint_lsn)
@@ -1364,7 +1357,7 @@ static void log_checkpoint_margin()
   log_mutex_exit();
 
   if (lsn > async_flush_lsn)
-    buf_flush_ahead(std::min(lsn, sync_flush_lsn));
+    buf_flush_ahead(lsn);
 
   if (lsn > async_checkpoint_lsn)
     log_checkpoint();
