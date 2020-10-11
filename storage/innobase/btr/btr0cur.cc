@@ -3325,13 +3325,19 @@ static void btr_cur_prefetch_siblings(const buf_block_t *block,
   uint32_t next= mach_read_from_4(my_assume_aligned<4>(page + FIL_PAGE_NEXT));
 
   if (prev != FIL_NULL)
+  {
+    ut_a(index->table->space->acquire_for_io());
     buf_read_page_background(index->table->space,
                              page_id_t(block->page.id().space(), prev),
                              block->zip_size(), false);
+  }
   if (next != FIL_NULL)
+  {
+    ut_a(index->table->space->acquire_for_io());
     buf_read_page_background(index->table->space,
                              page_id_t(block->page.id().space(), next),
                              block->zip_size(), false);
+  }
 }
 
 /*************************************************************//**
@@ -7210,14 +7216,10 @@ btr_store_big_rec_extern_fields(
 					committed and restarted. */
 	enum blob_op	op)		/*! in: operation code */
 {
-	ulint		rec_page_no;
 	byte*		field_ref;
 	ulint		extern_len;
 	ulint		store_len;
-	ulint		page_no;
 	ulint		space_id;
-	ulint		prev_page_no;
-	ulint		hint_page_no;
 	ulint		i;
 	mtr_t		mtr;
 	mem_heap_t*	heap = NULL;
@@ -7241,7 +7243,6 @@ btr_store_big_rec_extern_fields(
 				      &rec, op);
 	page_zip = buf_block_get_page_zip(rec_block);
 	space_id = rec_block->page.id().space();
-	rec_page_no = rec_block->page.id().page_no();
 	ut_a(fil_page_index_page_check(page_align(rec))
 	     || op == BTR_STORE_INSERT_BULK);
 
@@ -7304,7 +7305,7 @@ btr_store_big_rec_extern_fields(
 		MEM_CHECK_DEFINED(big_rec_vec->fields[i].data, extern_len);
 		ut_a(extern_len > 0);
 
-		prev_page_no = FIL_NULL;
+		uint32_t prev_page_no = FIL_NULL;
 
 		if (page_zip) {
 			int	err = deflateReset(&c_stream);
@@ -7330,7 +7331,6 @@ btr_store_big_rec_extern_fields(
 					rec, offsets, field_no);
 
 				page_zip = buf_block_get_page_zip(rec_block);
-				rec_page_no = rec_block->page.id().page_no();
 			}
 
 			mtr.start();
@@ -7340,10 +7340,9 @@ btr_store_big_rec_extern_fields(
 			buf_page_get(rec_block->page.id(),
 				     rec_block->zip_size(), RW_X_LATCH, &mtr);
 
-			if (prev_page_no == FIL_NULL) {
-				hint_page_no = 1 + rec_page_no;
-			} else {
-				hint_page_no = prev_page_no + 1;
+			uint32_t hint_prev = prev_page_no;
+			if (hint_prev == FIL_NULL) {
+				hint_prev = rec_block->page.id().page_no();
 			}
 
 			if (!fsp_reserve_free_extents(&r_extents,
@@ -7354,14 +7353,14 @@ btr_store_big_rec_extern_fields(
 				goto func_exit;
 			}
 
-			block = btr_page_alloc(index, hint_page_no, FSP_NO_DIR,
-					       0, &mtr, &mtr);
+			block = btr_page_alloc(index, hint_prev + 1,
+					       FSP_NO_DIR, 0, &mtr, &mtr);
 
 			index->table->space->release_free_extents(r_extents);
 
 			ut_a(block != NULL);
 
-			page_no = block->page.id().page_no();
+			const uint32_t page_no = block->page.id().page_no();
 
 			if (prev_page_no != FIL_NULL) {
 				buf_block_t*	prev_block;

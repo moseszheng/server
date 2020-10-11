@@ -1121,7 +1121,7 @@ struct rotate_thread_t {
 	uint thread_no;
 	bool first;		    /*!< is position before first space */
 	fil_space_t* space;	    /*!< current space or NULL */
-	ulint offset;		    /*!< current offset */
+	uint32_t offset;	    /*!< current page number */
 	ulint batch;		    /*!< #pages to rotate */
 	uint  min_key_version_found;/*!< min key version found but not rotated */
 	lsn_t end_lsn;		    /*!< max lsn when rotating this space */
@@ -1693,7 +1693,7 @@ fil_crypt_find_page_to_rotate(
 		}
 	}
 
-	crypt_data->rotate_state.next_offset += batch;
+	crypt_data->rotate_state.next_offset += uint32_t(batch);
 	mutex_exit(&crypt_data->mutex);
 	return found;
 }
@@ -1915,9 +1915,9 @@ fil_crypt_rotate_pages(
 	const key_state_t*	key_state,
 	rotate_thread_t*	state)
 {
-	ulint space = state->space->id;
-	ulint end = std::min(state->offset + state->batch,
-			     state->space->free_limit);
+	ulint space_id = state->space->id;
+	uint32_t end = std::min(state->offset + uint32_t(state->batch),
+				state->space->free_limit);
 
 	ut_ad(state->space->referenced());
 
@@ -1931,7 +1931,7 @@ fil_crypt_rotate_pages(
 		* real pages, they will be updated anyway when the
 		* real page is updated
 		*/
-		if (buf_dblwr.is_inside(page_id_t(space, state->offset))) {
+		if (buf_dblwr.is_inside(page_id_t(space_id, state->offset))) {
 			continue;
 		}
 
@@ -2245,13 +2245,9 @@ static void fil_crypt_rotation_list_fill()
 		}
 
 		/* Ensure that crypt_data has been initialized. */
-		if (!space->size) {
-			fil_system.read_page0(space);
-			if (!space->size) {
-				/* Page 0 was not loaded.
-				Skip this tablespace. */
-				goto next;
-			}
+		if (!space->get_size()) {
+			/* Page 0 was not loaded. Skip this tablespace. */
+			goto next;
 		}
 
 		/* Skip ENCRYPTION!=DEFAULT tablespaces. */

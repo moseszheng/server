@@ -229,10 +229,12 @@ srv_file_check_mode(
 static const char INIT_LOG_FILE0[]= "101";
 
 /** Creates log file.
-@param[in]	lsn		FIL_PAGE_FILE_FLUSH_LSN value
-@param[out]	logfile0	name of the log file
+@param[in]  create_new_db   whether the database is being initialized
+@param[in]  lsn		    FIL_PAGE_FILE_FLUSH_LSN value
+@param[out] logfile0        name of the log file
 @return DB_SUCCESS or error code */
-static dberr_t create_log_file(lsn_t lsn, std::string& logfile0)
+static dberr_t create_log_file(bool create_new_db, lsn_t lsn,
+                               std::string& logfile0)
 {
 	if (srv_read_only_mode) {
 		ib::error() << "Cannot create log file in read-only mode";
@@ -296,7 +298,9 @@ static dberr_t create_log_file(lsn_t lsn, std::string& logfile0)
 	}
 
 	log_sys.log.open_file(logfile0);
-	fil_open_system_tablespace_files();
+	if (!fil_system.sys_space->open(create_new_db)) {
+		return DB_ERROR;
+	}
 
 	/* Create a log checkpoint. */
 	log_mutex_enter();
@@ -552,8 +556,8 @@ err_exit:
 
   fil_set_max_space_id_if_bigger(space_id);
 
-  fil_space_t *space= fil_space_create(undo_name, space_id, fsp_flags,
-                                       FIL_TYPE_TABLESPACE, NULL);
+  fil_space_t *space= fil_space_t::create(undo_name, space_id, fsp_flags,
+					  FIL_TYPE_TABLESPACE, NULL);
   ut_a(fil_validate());
   ut_a(space);
 
@@ -562,20 +566,15 @@ err_exit:
 
   if (create)
   {
-    space->size= file->size= ulint(size >> srv_page_size_shift);
-    space->size_in_header= SRV_UNDO_TABLESPACE_SIZE_IN_PAGES;
-    space->committed_size= SRV_UNDO_TABLESPACE_SIZE_IN_PAGES;
+    space->set_sizes(SRV_UNDO_TABLESPACE_SIZE_IN_PAGES);
+    space->size= file->size= uint32_t(size >> srv_page_size_shift);
   }
-  else
+  else if (!file->read_page0())
   {
-    success= file->read_page0(true);
-    if (!success)
-    {
-      os_file_close(file->handle);
-      file->handle= OS_FILE_CLOSED;
-      ut_a(fil_system.n_open > 0);
-      fil_system.n_open--;
-    }
+    os_file_close(file->handle);
+    file->handle= OS_FILE_CLOSED;
+    ut_a(fil_system.n_open > 0);
+    fil_system.n_open--;
   }
 
   mutex_exit(&fil_system.mutex);
@@ -802,7 +801,7 @@ srv_open_tmp_tablespace(bool create_new_db)
 			    true, create_new_db, &sum_of_new_sizes, NULL))
 		   != DB_SUCCESS) {
 		ib::error() << "Unable to create the shared innodb_temporary";
-	} else if (fil_system.temp_space->open()) {
+	} else if (fil_system.temp_space->open(true)) {
 		/* Initialize the header page */
 		mtr_t mtr;
 		mtr.start();
@@ -1335,7 +1334,7 @@ dberr_t srv_start(bool create_new_db)
 		log_sys.set_flushed_lsn(flushed_lsn);
 		buf_flush_sync();
 
-		err = create_log_file(flushed_lsn, logfile0);
+		err = create_log_file(true, flushed_lsn, logfile0);
 
 		if (err != DB_SUCCESS) {
 			return(srv_init_abort(err));
@@ -1363,7 +1362,7 @@ dberr_t srv_start(bool create_new_db)
 
 			srv_log_file_size = srv_log_file_size_requested;
 
-			err = create_log_file(flushed_lsn, logfile0);
+			err = create_log_file(false, flushed_lsn, logfile0);
 
 			if (err == DB_SUCCESS) {
 				err = create_log_file_rename(flushed_lsn,
@@ -1394,11 +1393,11 @@ dberr_t srv_start(bool create_new_db)
 file_checked:
 	/* Open log file and data files in the systemtablespace: we keep
         them open until database shutdown */
-
-	fil_open_system_tablespace_files();
 	ut_d(fil_system.sys_space->recv_size = srv_sys_space_size_debug);
 
-	err = srv_undo_tablespaces_init(create_new_db);
+	err = fil_system.sys_space->open(create_new_db)
+		? srv_undo_tablespaces_init(create_new_db)
+		: DB_ERROR;
 
 	/* If the force recovery is set very high then we carry on regardless
 	of all errors. Basically this is fingers crossed mode. */
@@ -1424,7 +1423,8 @@ file_checked:
 		ut_ad(fil_system.sys_space->id == 0);
 		compile_time_assert(TRX_SYS_SPACE == 0);
 		compile_time_assert(IBUF_SPACE_ID == 0);
-		fsp_header_init(fil_system.sys_space, sum_of_new_sizes, &mtr);
+		fsp_header_init(fil_system.sys_space,
+				uint32_t(sum_of_new_sizes), &mtr);
 
 		ulint ibuf_root = btr_create(
 			DICT_CLUSTERED | DICT_IBUF, fil_system.sys_space,
@@ -1546,7 +1546,8 @@ file_checked:
 				mtr.write<4>(*block,
 					     FSP_HEADER_OFFSET + FSP_SIZE
 					     + block->frame, size);
-				fil_system.sys_space->size_in_header = size;
+				fil_system.sys_space->size_in_header
+					= uint32_t(size);
 				mtr.commit();
 				/* Immediately write the log record about
 				increased tablespace size to disk, so that it
@@ -1689,7 +1690,7 @@ file_checked:
 
 			srv_log_file_size = srv_log_file_size_requested;
 
-			err = create_log_file(flushed_lsn, logfile0);
+			err = create_log_file(false, flushed_lsn, logfile0);
 
 			if (err == DB_SUCCESS) {
 				err = create_log_file_rename(flushed_lsn,

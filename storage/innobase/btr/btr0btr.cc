@@ -511,7 +511,7 @@ buf_block_t*
 btr_page_alloc_low(
 /*===============*/
 	dict_index_t*	index,		/*!< in: index */
-	ulint		hint_page_no,	/*!< in: hint of a good page */
+	uint32_t	hint_page_no,	/*!< in: hint of a good page */
 	byte		file_direction,	/*!< in: direction where a possible
 					page split is made */
 	ulint		level,		/*!< in: level where the page is placed
@@ -548,7 +548,7 @@ buf_block_t*
 btr_page_alloc(
 /*===========*/
 	dict_index_t*	index,		/*!< in: index */
-	ulint		hint_page_no,	/*!< in: hint of a good page */
+	uint32_t	hint_page_no,	/*!< in: hint of a good page */
 	byte		file_direction,	/*!< in: direction where a possible
 					page split is made */
 	ulint		level,		/*!< in: level where the page is placed
@@ -2801,7 +2801,7 @@ func_start:
 	tuple to be inserted should be the first record on the upper
 	half-page */
 	bool insert_left = false;
-	ulint hint_page_no = block->page.id().page_no() + 1;
+	uint32_t hint_page_no = block->page.id().page_no() + 1;
 	byte direction = FSP_UP;
 
 	if (tuple && n_iterations > 0) {

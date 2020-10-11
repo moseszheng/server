@@ -607,7 +607,7 @@ buf_block_t*
 btr_page_alloc(
 /*===========*/
 	dict_index_t*	index,		/*!< in: index tree */
-	ulint		hint_page_no,	/*!< in: hint of a good page */
+	uint32_t	hint_page_no,	/*!< in: hint of a good page */
 	byte		file_direction,	/*!< in: direction where a possible
 					page split is made */
 	ulint		level,		/*!< in: level where the page is placed

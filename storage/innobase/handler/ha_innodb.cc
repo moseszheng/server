@@ -978,7 +978,7 @@ static SHOW_VAR innodb_status_variables[]= {
   {"system_rows_read", &export_vars.innodb_system_rows_read, SHOW_SIZE_T},
   {"system_rows_updated", &export_vars.innodb_system_rows_updated,
    SHOW_SIZE_T},
-  {"num_open_files", &export_vars.innodb_num_open_files, SHOW_SIZE_T},
+  {"num_open_files", &fil_system.n_open, SHOW_SIZE_T},
   {"truncated_status_writes", &export_vars.innodb_truncated_status_writes,
    SHOW_SIZE_T},
   {"available_undo_logs", &srv_available_undo_logs, SHOW_ULONG},
@@ -19194,11 +19194,11 @@ static MYSQL_SYSVAR_BOOL(log_optimize_ddl, deprecated::innodb_log_optimize_ddl,
   PLUGIN_VAR_OPCMDARG,
   innodb_deprecated_ignored, NULL, innodb_log_optimize_ddl_warn, FALSE);
 
-static MYSQL_SYSVAR_ULONG(autoextend_increment,
+static MYSQL_SYSVAR_UINT(autoextend_increment,
   sys_tablespace_auto_extend_increment,
   PLUGIN_VAR_RQCMDARG,
   "Data file autoextend increment in megabytes",
-  NULL, NULL, 64L, 1L, 1000L, 0);
+  NULL, NULL, 64, 1, 1000, 0);
 
 /** Validate the requested buffer pool size.  Also, reserve the necessary
 memory needed for buffer pool resize.

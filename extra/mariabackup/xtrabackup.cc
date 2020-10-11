@@ -3086,24 +3086,16 @@ xb_load_single_table_tablespace(
 	bool is_empty_file = file->exists() && file->is_empty_file();
 
 	if (err == DB_SUCCESS && file->space_id() != SRV_TMP_SPACE_ID) {
-		os_offset_t	node_size = os_file_get_size(file->handle());
-		os_offset_t	n_pages;
-
-		ut_a(node_size != (os_offset_t) -1);
-
-		n_pages = node_size / fil_space_t::physical_size(file->flags());
-
-		space = fil_space_create(
+		space = fil_space_t::create(
 			name, file->space_id(), file->flags(),
 			FIL_TYPE_TABLESPACE, NULL/* TODO: crypt_data */);
 
 		ut_a(space != NULL);
 
-		space->add(file->filepath(), OS_FILE_CLOSED, ulint(n_pages),
-			   false, false);
+		space->add(file->filepath(), OS_FILE_CLOSED, 0, false, false);
 		/* by opening the tablespace we forcing node and space objects
 		in the cache to be populated with fields from space header */
-		space->open();
+		space->get_size();
 
 		if (srv_operation == SRV_OPERATION_RESTORE_DELTA
 		    || xb_close_files) {
@@ -4707,8 +4699,8 @@ exit:
 	ut_ad(fil_space_t::zip_size(flags) == info.zip_size);
 	ut_ad(fil_space_t::physical_size(flags) == info.page_size);
 
-	if (fil_space_create(dest_space_name, info.space_id, flags,
-			      FIL_TYPE_TABLESPACE, 0)) {
+	if (fil_space_t::create(dest_space_name, info.space_id, flags,
+				FIL_TYPE_TABLESPACE, 0)) {
 		*success = xb_space_create_file(real_name, info.space_id,
 						flags, &file);
 	} else {
@@ -4901,7 +4893,8 @@ xtrabackup_apply_delta(
 						space->chain);
 					bool fail = !strcmp(n->name, dst_path)
 						&& !fil_space_extend(
-							space, (ulint)n_pages);
+							space,
+							uint32_t(n_pages));
 					if (fail) goto error;
 				}
 			}

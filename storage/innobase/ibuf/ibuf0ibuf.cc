@@ -1901,7 +1901,6 @@ ibuf_remove_free_page(void)
 	mtr_t	mtr;
 	mtr_t	mtr2;
 	page_t*	header_page;
-	ulint	page_no;
 
 	log_free_check();
 
@@ -1933,8 +1932,8 @@ ibuf_remove_free_page(void)
 
 	mutex_exit(&ibuf_mutex);
 
-	page_no = flst_get_last(PAGE_HEADER + PAGE_BTR_IBUF_FREE_LIST
-				+ root->frame).page;
+	uint32_t page_no = flst_get_last(PAGE_HEADER + PAGE_BTR_IBUF_FREE_LIST
+					 + root->frame).page;
 
 	/* NOTE that we must release the latch on the ibuf tree root
 	because in fseg_free_page we access level 1 pages, and the root
@@ -2304,7 +2303,7 @@ static void ibuf_read_merge_pages(const ulint* space_ids,
 
 	for (ulint i = 0; i < n_stored; i++) {
 		const ulint space_id = space_ids[i];
-		fil_space_t* s = fil_space_acquire_for_io(space_id);
+		fil_space_t* s = fil_space_t::get_for_io(space_id);
 		if (!s) {
 tablespace_deleted:
 			/* The tablespace was not found: remove all
@@ -4642,36 +4641,19 @@ ibuf_print(
 @return DB_SUCCESS or error code */
 dberr_t ibuf_check_bitmap_on_import(const trx_t* trx, fil_space_t* space)
 {
-	ulint	page_no;
 	ut_ad(trx->mysql_thd);
 	ut_ad(space->purpose == FIL_TYPE_IMPORT);
 
-	const ulint zip_size = space->zip_size();
-	const ulint physical_size = space->physical_size();
-	/* fil_space_t::size and fil_space_t::free_limit would still be 0
-	at this point. So, we will have to read page 0. */
-	ut_ad(!space->free_limit);
-	ut_ad(!space->size);
+	const unsigned zip_size = space->zip_size();
+	const unsigned physical_size = space->physical_size();
 
-	mtr_t	mtr;
-	ulint	size;
-	mtr.start();
-	if (buf_block_t* sp = buf_page_get(page_id_t(space->id, 0),
-					   zip_size,
-					   RW_S_LATCH, &mtr)) {
-		size = std::min(
-			mach_read_from_4(FSP_HEADER_OFFSET + FSP_FREE_LIMIT
-					 + sp->frame),
-			mach_read_from_4(FSP_HEADER_OFFSET + FSP_SIZE
-					 + sp->frame));
-	} else {
-		size = 0;
-	}
-	mtr.commit();
+	uint32_t size= std::min(space->free_limit, space->size);
 
 	if (size == 0) {
 		return(DB_TABLE_NOT_FOUND);
 	}
+
+	mtr_t mtr;
 
 	mutex_enter(&ibuf_mutex);
 
@@ -4681,7 +4663,7 @@ dberr_t ibuf_check_bitmap_on_import(const trx_t* trx, fil_space_t* space)
 	below page_no is measured in number of pages since the beginning of
 	the space, as usual. */
 
-	for (page_no = 0; page_no < size; page_no += physical_size) {
+	for (uint32_t page_no = 0; page_no < size; page_no += physical_size) {
 		if (trx_is_interrupted(trx)) {
 			mutex_exit(&ibuf_mutex);
 			return(DB_INTERRUPTED);

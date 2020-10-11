@@ -106,13 +106,8 @@ buf_read_ahead_linear(const page_id_t page_id, ulint zip_size, bool ibuf);
 @param[in]	space_id	tablespace id
 @param[in]	page_nos	array of page numbers to read, with the
 highest page number the last in the array
-@param[in]	n_stored	number of page numbers in the array */
-
-void
-buf_read_recv_pages(
-	ulint		space_id,
-	const ulint*	page_nos,
-	ulint		n_stored);
+@param[in]	n		number of page numbers in the array */
+void buf_read_recv_pages(ulint space_id, const uint32_t* page_nos, ulint n);
 
 /** @name Modes used in read-ahead @{ */
 /** read only pages belonging to the insert buffer tree */
