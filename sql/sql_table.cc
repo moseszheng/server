@@ -7172,8 +7172,7 @@ static bool fill_alter_inplace_info(THD *thd, TABLE *table, bool varchar,
       }
 
       /* Check if field was renamed */
-      if (lex_string_cmp(system_charset_info, &field->field_name,
-                         &new_field->field_name))
+      if (cmp(&field->field_name, &new_field->field_name))
       {
         field->flags|= FIELD_IS_RENAMED;
         ha_alter_info->handler_flags|= ALTER_COLUMN_NAME;
