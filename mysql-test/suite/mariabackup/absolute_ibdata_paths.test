@@ -32,7 +32,7 @@ let $_innodb_data_home_dir=`select @@innodb_data_home_dir`;
 --disable_result_log
 exec $XTRABACKUP --defaults-file=$MYSQLTEST_VARDIR/my.cnf --backup --target-dir=$targetdir;
 --enable_result_log
-echo exec $XTRABACKUP  --prepare --target-dir=$targetdir;
+exec $XTRABACKUP  --prepare --target-dir=$targetdir;
 
 --source include/shutdown_mysqld.inc
 echo # remove datadir;

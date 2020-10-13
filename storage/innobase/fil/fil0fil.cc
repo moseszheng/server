@@ -431,10 +431,21 @@ static bool fil_node_open_file_low(fil_node_t *node)
   }
 
   ut_ad(node->is_open());
-  /* Move the file last in fil_system.space_list, so that
-  fil_try_to_close_file() should close it as a last resort. */
-  UT_LIST_REMOVE(fil_system.space_list, node->space);
-  UT_LIST_ADD_LAST(fil_system.space_list, node->space);
+
+  switch (UNIV_EXPECT(srv_operation, SRV_OPERATION_NORMAL)) {
+  case SRV_OPERATION_NORMAL:
+  case SRV_OPERATION_RESTORE_EXPORT:
+    /* Move the file last in fil_system.space_list, so that
+    fil_try_to_close_file() should close it as a last resort. */
+    UT_LIST_REMOVE(fil_system.space_list, node->space);
+    UT_LIST_ADD_LAST(fil_system.space_list, node->space);
+    break;
+  case SRV_OPERATION_BACKUP:
+  case SRV_OPERATION_RESTORE:
+  case SRV_OPERATION_RESTORE_DELTA:
+    /* datafiles_iter_next() depends on a fixed order */
+    break;
+  }
 
   fil_system.n_open++;
   return true;

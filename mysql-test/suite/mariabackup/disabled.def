@@ -1,2 +1,0 @@
-mdev-14447 : MDEV-23855 FIXME innodb_undo_tablespaces problem
-absolute_ibdata_paths : MDEV-23855 FIXME innodb_data_file_path problem
