@@ -1353,13 +1353,13 @@ static ulint buf_do_flush_list_batch(ulint max_n, lsn_t lsn)
         if (space)
           space->release_for_io();
 	else if (last_space_id == space_id)
-          continue;
+          goto reacquire_flush_list_mutex;
 
         space= buf_flush_space(space_id);
 	last_space_id= space_id;
 
         if (!space)
-          continue;
+          goto reacquire_flush_list_mutex;
       }
       if (neighbors && space->is_rotational())
       {
@@ -1376,6 +1376,7 @@ reacquire_mutex:
       }
     }
 
+reacquire_flush_list_mutex:
     mysql_mutex_lock(&buf_pool.flush_list_mutex);
     ut_ad(flushed || buf_pool.flush_hp.is_hp(prev));
   }
