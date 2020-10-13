@@ -1406,7 +1406,7 @@ static void flush_buffer_pool()
                                      flush_list_length());
       set_timespec(abstime, INNODB_EXTEND_TIMEOUT_INTERVAL / 2);
       mysql_mutex_lock(&buf_pool.mutex);
-      if (buf_pool.n_flush_list)
+      while (buf_pool.n_flush_list)
         mysql_cond_timedwait(&buf_pool.done_flush_list, &buf_pool.mutex,
                              &abstime);
       mysql_mutex_unlock(&buf_pool.mutex);
