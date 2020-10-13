@@ -948,7 +948,7 @@ void dict_drop_index_tree(btr_pcur_t* pcur, trx_t* trx, mtr_t* mtr)
 
 	ut_ad(len == 8);
 
-	if (fil_space_t* s = fil_space_acquire_silent(space_id)) {
+	if (fil_space_t* s = fil_space_t::acquire(space_id)) {
 		/* Ensure that the tablespace file exists
 		in order to avoid a crash in buf_page_get_gen(). */
 		if (root_page_no < s->get_size()) {
@@ -956,7 +956,7 @@ void dict_drop_index_tree(btr_pcur_t* pcur, trx_t* trx, mtr_t* mtr)
 					   s->zip_size(),
 					   mach_read_from_8(ptr), mtr);
 		}
-		s->release();
+		s->release_for_io();
 	}
 }
 

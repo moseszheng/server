@@ -6551,7 +6551,7 @@ i_s_dict_fill_sys_tablespaces(
 	memset(&file, 0xff, sizeof(file));
 	memset(&stat, 0x0, sizeof(stat));
 
-	if (fil_space_t* s = fil_space_acquire_silent(space)) {
+	if (fil_space_t* s = fil_space_t::acquire(space)) {
 		const char *filepath = s->chain.start
 			? s->chain.start->name : NULL;
 		if (!filepath) {
@@ -6579,7 +6579,7 @@ i_s_dict_fill_sys_tablespaces(
 		}
 
 file_done:
-		s->release();
+		s->release_for_io();
 	}
 
 	if (file.m_total_size == os_offset_t(~0)) {
@@ -7048,15 +7048,15 @@ i_s_tablespaces_encryption_fill_table(
 	for (fil_space_t* space = UT_LIST_GET_FIRST(fil_system.space_list);
 	     space; space = UT_LIST_GET_NEXT(space_list, space)) {
 		if (space->purpose == FIL_TYPE_TABLESPACE
-		    && space->acquire()) {
+		    && space->acquire_for_io_if_not_stopped(true)) {
 			mutex_exit(&fil_system.mutex);
 			if (int err = i_s_dict_fill_tablespaces_encryption(
 				    thd, space, tables->table)) {
-				space->release();
+				space->release_for_io();
 				DBUG_RETURN(err);
 			}
 			mutex_enter(&fil_system.mutex);
-			space->release();
+			space->release_for_io();
 		}
 	}
 

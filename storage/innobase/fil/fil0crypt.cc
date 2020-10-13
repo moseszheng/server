@@ -633,7 +633,7 @@ byte* fil_space_encrypt(
 		return (src_frame);
 	}
 
-	ut_ad(space->pending_io());
+	ut_ad(space->referenced());
 
 	return fil_encrypt_buf(space->crypt_data, space->id, offset,
 			       src_frame, space->zip_size(),
@@ -846,7 +846,7 @@ fil_space_decrypt(
 	const ulint physical_size = space->physical_size();
 
 	ut_ad(space->crypt_data != NULL && space->crypt_data->is_encrypted());
-	ut_ad(space->pending_io());
+	ut_ad(space->referenced());
 
 	bool encrypted = fil_space_decrypt(space->id, space->crypt_data,
 					   tmp_frame, physical_size,
@@ -1454,7 +1454,7 @@ inline fil_space_t *fil_system_t::keyrotate_next(fil_space_t *space,
 
   if (space)
   {
-    const bool released= !space->release();
+    const bool released= !space->release_for_io();
 
     if (space->is_in_rotation_list)
     {
@@ -1479,7 +1479,7 @@ inline fil_space_t *fil_system_t::keyrotate_next(fil_space_t *space,
   while (it != end)
   {
     space= &*it;
-    if (space->acquire())
+    if (space->acquire_for_io_if_not_stopped(true))
       return space;
     while (++it != end && (!UT_LIST_GET_LEN(it->chain) || it->is_stopping()));
   }
@@ -1487,44 +1487,41 @@ inline fil_space_t *fil_system_t::keyrotate_next(fil_space_t *space,
   return NULL;
 }
 
-/** Return the next tablespace.
-@param space    previous tablespace (NULL to start from the beginning)
+/** Determine the next tablespace for encryption key rotation.
+@param space    current tablespace (nullptr to start from the beginning)
 @param recheck  whether the removal condition needs to be rechecked after
-the encryption parameters were changed
+encryption parameters were changed
 @param encrypt  expected state of innodb_encrypt_tables
-@return pointer to the next tablespace (with n_pending_ops incremented)
-@retval NULL if this was the last */
-static fil_space_t *fil_space_next(fil_space_t *space, bool recheck,
-                                   bool encrypt)
+@return the next tablespace
+@retval nullptr upon reaching the end of the iteration */
+inline fil_space_t *fil_space_t::next(fil_space_t *space, bool recheck,
+                                      bool encrypt)
 {
   mutex_enter(&fil_system.mutex);
 
   if (!srv_fil_crypt_rotate_key_age)
     space= fil_system.keyrotate_next(space, recheck, encrypt);
-  else if (!space)
-  {
-    space= UT_LIST_GET_FIRST(fil_system.space_list);
-    /* We can trust that space is not NULL because at least the
-    system tablespace is always present and loaded first. */
-    if (!space->acquire())
-      goto next;
-  }
   else
   {
-    /* Move on to the next fil_space_t */
-    space->release();
-next:
-    space= UT_LIST_GET_NEXT(space_list, space);
-
-    /* Skip abnormal tablespaces or those that are being created by
-    fil_ibd_create(), or being dropped. */
-    while (space &&
-           (UT_LIST_GET_LEN(space->chain) == 0 ||
-            space->is_stopping() || space->purpose != FIL_TYPE_TABLESPACE))
+    if (!space)
+      space= UT_LIST_GET_FIRST(fil_system.space_list);
+    else
+    {
+      /* Move on to the next fil_space_t */
+      space->release_for_io();
       space= UT_LIST_GET_NEXT(space_list, space);
+    }
 
-    if (space && !space->acquire())
-      goto next;
+    for (; space; space= UT_LIST_GET_NEXT(space_list, space))
+    {
+      if (space->purpose != FIL_TYPE_TABLESPACE)
+        continue;
+      const uint32_t n= space->acquire_low();
+      if (UNIV_LIKELY(!(n & (STOPPING | CLOSING))))
+        break;
+      if (!(n & STOPPING) && space->prepare_for_io(true))
+        break;
+    }
   }
 
   mutex_exit(&fil_system.mutex);
@@ -1544,7 +1541,7 @@ static bool fil_crypt_find_space_to_rotate(
 	/* we need iops to start rotating */
 	while (!state->should_shutdown() && !fil_crypt_alloc_iops(state)) {
 		if (state->space && state->space->is_stopping()) {
-			state->space->release();
+			state->space->release_for_io();
 			state->space = NULL;
 		}
 
@@ -1554,7 +1551,7 @@ static bool fil_crypt_find_space_to_rotate(
 
 	if (state->should_shutdown()) {
 		if (state->space) {
-			state->space->release();
+			state->space->release_for_io();
 			state->space = NULL;
 		}
 		return false;
@@ -1563,13 +1560,13 @@ static bool fil_crypt_find_space_to_rotate(
 	if (state->first) {
 		state->first = false;
 		if (state->space) {
-			state->space->release();
+			state->space->release_for_io();
 		}
 		state->space = NULL;
 	}
 
-	state->space = fil_space_next(state->space, *recheck,
-				      key_state->key_version != 0);
+	state->space = fil_space_t::next(state->space, *recheck,
+					 key_state->key_version != 0);
 
 	while (!state->should_shutdown() && state->space) {
 		/* If there is no crypt data and we have not yet read
@@ -1587,12 +1584,12 @@ static bool fil_crypt_find_space_to_rotate(
 			return true;
 		}
 
-		state->space = fil_space_next(state->space, *recheck,
-					      key_state->key_version != 0);
+		state->space = fil_space_t::next(state->space, *recheck,
+					         key_state->key_version != 0);
 	}
 
 	if (state->space) {
-		state->space->release();
+		state->space->release_for_io();
 		state->space = NULL;
 	}
 
@@ -2141,7 +2138,7 @@ DECLARE_THREAD(fil_crypt_thread)(void*)
 				space and stop rotation. */
 				if (thr.space->is_stopping()) {
 					fil_crypt_complete_rotate_space(&thr);
-					thr.space->release();
+					thr.space->release_for_io();
 					thr.space = NULL;
 					break;
 				}
@@ -2168,7 +2165,7 @@ DECLARE_THREAD(fil_crypt_thread)(void*)
 
 	/* release current space if shutting down */
 	if (thr.space) {
-		thr.space->release();
+		thr.space->release_for_io();
 		thr.space = NULL;
 	}
 
@@ -2240,15 +2237,12 @@ static void fil_crypt_rotation_list_fill()
 		if (space->purpose != FIL_TYPE_TABLESPACE
 		    || space->is_in_rotation_list
 		    || UT_LIST_GET_LEN(space->chain) == 0
-		    || !space->acquire()) {
+		    || !space->acquire_for_io_if_not_stopped(true)) {
 			continue;
 		}
 
 		/* Ensure that crypt_data has been initialized. */
-		if (!space->get_size()) {
-			/* Page 0 was not loaded. Skip this tablespace. */
-			goto next;
-		}
+		ut_ad(space->size);
 
 		/* Skip ENCRYPTION!=DEFAULT tablespaces. */
 		if (space->crypt_data
@@ -2275,7 +2269,7 @@ static void fil_crypt_rotation_list_fill()
 		fil_system.rotation_list.push_back(*space);
 		space->is_in_rotation_list = true;
 next:
-		space->release();
+		space->release_for_io();
 	}
 }
 

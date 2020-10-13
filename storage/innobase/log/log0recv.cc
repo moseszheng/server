@@ -2060,10 +2060,10 @@ same_page:
       const bool is_init= (b & 0x70) <= INIT_PAGE;
       switch (*store) {
       case STORE_IF_EXISTS:
-        if (fil_space_t *space= fil_space_acquire_silent(space_id))
+        if (fil_space_t *space= fil_space_t::acquire(space_id))
         {
           const auto size= space->get_size();
-	  space->release();
+	  space->release_for_io();
 	  if (!size)
             continue;
 	}
@@ -2312,7 +2312,7 @@ static void recv_recover_page(buf_block_t* block, mtr_t& mtr,
 
 		if (fil_space_t* s = space
 		    ? space
-		    : fil_space_acquire(block->page.id().space())) {
+		    : fil_space_t::acquire(block->page.id().space())) {
 			switch (a) {
 			case log_phys_t::APPLIED_TO_FSP_HEADER:
 				s->flags = mach_read_from_4(
@@ -2351,8 +2351,8 @@ static void recv_recover_page(buf_block_t* block, mtr_t& mtr,
 				fil_crypt_parse(s, b);
 			}
 
-			if (s != space) {
-				s->release();
+			if (!space) {
+				s->release_for_io();
 			}
 		}
 

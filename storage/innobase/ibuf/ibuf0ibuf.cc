@@ -4034,12 +4034,12 @@ ibuf_restore_pos(
 		return(TRUE);
 	}
 
-	if (fil_space_t* s = fil_space_acquire_silent(space)) {
+	if (fil_space_t* s = fil_space_t::acquire(space)) {
 		ib::error() << "ibuf cursor restoration fails!"
 			" ibuf record inserted to page "
 			<< space << ":" << page_no
 			<< " in file " << s->chain.start->name;
-		s->release();
+		s->release_for_io();
 
 		ib::error() << BUG_REPORT_MSG;
 
@@ -4225,7 +4225,7 @@ ibuf_merge_or_delete_for_page(
 	fil_space_t*	space;
 
 	if (update_ibuf_bitmap) {
-		space = fil_space_acquire_silent(page_id.space());
+		space = fil_space_t::acquire(page_id.space());
 
 		if (UNIV_UNLIKELY(!space)) {
 			/* Do not try to read the bitmap page from the
@@ -4252,7 +4252,7 @@ ibuf_merge_or_delete_for_page(
 
 			if (!bitmap_bits) {
 				/* No changes are buffered for this page. */
-				space->release();
+				space->release_for_io();
 				return;
 			}
 		}
@@ -4498,7 +4498,7 @@ reset_bit:
 	ibuf_mtr_commit(&mtr);
 
 	if (space) {
-		space->release();
+		space->release_for_io();
 	}
 
 	btr_pcur_close(&pcur);

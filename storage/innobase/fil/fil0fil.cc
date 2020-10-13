@@ -267,7 +267,7 @@ The caller should hold an InnoDB table lock or a MDL that prevents
 the tablespace from being dropped during the operation,
 or the caller should be in single-threaded crash recovery mode
 (no user connections that could drop tablespaces).
-If this is not the case, fil_space_acquire() and fil_space_t::release()
+Normally, fil_space_t::acquire() or fil_space_t::get_for_io()
 should be used instead.
 @param[in]	id	tablespace ID
 @return tablespace, or NULL if not found */
@@ -452,7 +452,7 @@ static bool fil_node_open_file(fil_node_t *node)
         srv_operation == SRV_OPERATION_RESTORE ||
         srv_operation == SRV_OPERATION_RESTORE_DELTA);
   ut_ad(node->space->purpose != FIL_TYPE_TEMPORARY);
-  ut_ad(node->space->pending_io());
+  ut_ad(node->space->referenced());
 
   for (ulint count= 0; fil_system.n_open >= srv_max_n_open_files; count++)
   {
@@ -501,8 +501,7 @@ pfs_os_file_t fil_node_t::detach()
 void fil_node_t::prepare_to_close_or_detach()
 {
   ut_ad(mutex_own(&fil_system.mutex));
-  ut_ad(space->is_closing());
-  ut_ad(!space->pending_io());
+  ut_ad(space->is_ready_to_close());
   ut_a(is_open());
   ut_a(n_pending_flushes == 0);
   ut_a(!being_extended);
@@ -613,7 +612,7 @@ fil_space_extend_must_retry(
 	ut_ad(UT_LIST_GET_LAST(space->chain) == node);
 	ut_ad(size >= FIL_IBD_FILE_INITIAL_SIZE);
 	ut_ad(node->space == space);
-	ut_ad(space->pending_io());
+	ut_ad(space->referenced());
 
 	*success = space->size >= size;
 
@@ -705,10 +704,12 @@ fil_space_extend_must_retry(
 }
 
 /** @return whether the file is usable for io() */
-ATTRIBUTE_COLD bool fil_space_t::prepare_for_io()
+ATTRIBUTE_COLD bool fil_space_t::prepare_for_io(bool have_mutex)
 {
-  ut_ad(pending_io());
-  mutex_enter(&fil_system.mutex);
+  ut_ad(referenced());
+  if (!have_mutex)
+    mutex_enter(&fil_system.mutex);
+  ut_ad(mutex_own(&fil_system.mutex));
   fil_node_t *node= UT_LIST_GET_LAST(chain);
   ut_ad(!id || purpose == FIL_TYPE_TEMPORARY ||
         node == UT_LIST_GET_FIRST(chain));
@@ -750,9 +751,10 @@ ATTRIBUTE_COLD bool fil_space_t::prepare_for_io()
   }
   else
 clear:
-    n_pending_ios.fetch_and(NOT_CLOSING);
+   n_pending.fetch_and(~CLOSING, std::memory_order_relaxed);
 
-  mutex_exit(&fil_system.mutex);
+  if (!have_mutex)
+    mutex_exit(&fil_system.mutex);
   return is_open;
 }
 
@@ -883,7 +885,7 @@ fil_space_free_low(
 	/* Wait for fil_space_t::release_for_io(); after
 	fil_system_t::detach(), the tablespace cannot be found, so
 	fil_space_t::get_for_io() would return NULL */
-	while (space->pending_io()) {
+	while (space->referenced()) {
 		os_thread_sleep(100);
 	}
 
@@ -1004,7 +1006,7 @@ fil_space_t *fil_space_t::create(const char *name, ulint id, ulint flags,
 
 	space->magic_n = FIL_SPACE_MAGIC_N;
 	space->crypt_data = crypt_data;
-	space->n_pending_ios.store(CLOSING, std::memory_order_relaxed);
+	space->n_pending.store(CLOSING, std::memory_order_relaxed);
 
 	DBUG_LOG("tablespace",
 		 "Created metadata for " << id << " name " << name);
@@ -1147,7 +1149,8 @@ bool fil_space_t::read_page0()
     return false;
   ut_ad(!UT_LIST_GET_NEXT(chain, node));
 
-  n_pending_ios.fetch_add(1, std::memory_order_acquire);
+  ut_d(uint32_t n=) n_pending.fetch_add(1, std::memory_order_acquire);
+  ut_ad(!(n & STOPPING));
   const bool ok= node->is_open() || fil_node_open_file(node);
   release_for_io();
   return ok;
@@ -1399,7 +1402,7 @@ next:
 			}
 
 			ib::error() << "File '" << node->name
-				    << "' has " << space->pending_io()
+				    << "' has " << space->referenced()
 				    << " operations and "
 				    << node->n_pending_flushes
 				    << " flushes";
@@ -1480,33 +1483,23 @@ fil_write_flushed_lsn(
 	return fio.err;
 }
 
-/** Acquire a tablespace when it could be dropped concurrently.
-Used by background threads that do not necessarily hold proper locks
-for concurrency control.
-@param[in]	id	tablespace ID
-@param[in]	silent	whether to silently ignore missing tablespaces
-@return	the tablespace
-@retval	NULL if missing or being deleted */
-fil_space_t* fil_space_acquire_low(ulint id, bool silent)
+/** Acquire a tablespace reference.
+@param id      tablespace identifier
+@return tablespace
+@retval nullptr if the tablespace is missing or inaccessible */
+fil_space_t *fil_space_t::acquire(ulint id)
 {
-	fil_space_t*	space;
+  mutex_enter(&fil_system.mutex);
+  fil_space_t *space= fil_space_get_by_id(id);
+  const uint32_t n= space ? space->acquire_low() : 0;
+  mutex_exit(&fil_system.mutex);
 
-	mutex_enter(&fil_system.mutex);
+  if (n & STOPPING)
+    space= nullptr;
+  else if ((n & CLOSING) && !space->prepare_for_io())
+    space= nullptr;
 
-	space = fil_space_get_by_id(id);
-
-	if (space == NULL) {
-		if (!silent) {
-			ib::warn() << "Trying to access missing"
-				" tablespace " << id;
-		}
-	} else if (!space->acquire()) {
-		space = NULL;
-	}
-
-	mutex_exit(&fil_system.mutex);
-
-	return(space);
+  return space;
 }
 
 /** Acquire a tablespace for reading or writing a block,
@@ -1521,7 +1514,7 @@ fil_space_t *fil_space_t::get_for_io(ulint id)
   fil_space_t *space= fil_space_get_by_id(id);
 
   uint32_t f= space
-    ? space->n_pending_ios.fetch_add(1, std::memory_order_relaxed)
+    ? space->n_pending.fetch_add(1, std::memory_order_relaxed)
     : 0;
 
   mutex_exit(&fil_system.mutex);
@@ -1775,7 +1768,7 @@ fil_check_pending_io(
 	*node = UT_LIST_GET_FIRST(space->chain);
 
 	const auto f = space->n_pending_flushes;
-	const auto p = space->pending_io();
+	const auto p = space->referenced();
 
 	if (f || p) {
 		ut_a(!(*node)->being_extended);
@@ -1813,13 +1806,14 @@ fil_check_pending_operations(
 	fil_space_t* sp = fil_space_get_by_id(id);
 
 	if (sp) {
-		if (sp->crypt_data && sp->acquire()) {
+		sp->set_stopping(true);
+		if (sp->crypt_data) {
+			sp->reacquire_for_io();
 			mutex_exit(&fil_system.mutex);
 			fil_space_crypt_close_tablespace(sp);
 			mutex_enter(&fil_system.mutex);
-			sp->release();
+			sp->release_for_io();
 		}
-		sp->set_stopping(true);
 	}
 
 	/* Check for pending operations. */
@@ -2302,7 +2296,7 @@ fil_rename_tablespace(
 	multiple datafiles per tablespace. */
 	ut_a(UT_LIST_GET_LEN(space->chain) == 1);
 	node = UT_LIST_GET_FIRST(space->chain);
-	ut_a(space->acquire());
+	space->reacquire_for_io();
 
 	mutex_exit(&fil_system.mutex);
 
@@ -2324,7 +2318,7 @@ fil_rename_tablespace(
 	/* log_sys.mutex is above fil_system.mutex in the latching order */
 	ut_ad(log_mutex_own());
 	mutex_enter(&fil_system.mutex);
-	space->release();
+	space->release_for_io();
 	ut_ad(space->name == old_space_name);
 	ut_ad(node->name == old_file_name);
 	bool success;
@@ -3452,7 +3446,7 @@ fil_report_invalid_page_access(const char *name,
 inline void fil_node_t::complete_write()
 {
   ut_ad(!mutex_own(&fil_system.mutex));
-  ut_ad(space->pending_io());
+  ut_ad(space->referenced());
 
   if (space->purpose != FIL_TYPE_TEMPORARY && !space->is_stopping() &&
       srv_file_flush_method != SRV_O_DIRECT_NO_FSYNC)
@@ -3494,7 +3488,7 @@ inline void fil_node_t::complete_write()
 fil_io_t fil_space_t::io(const IORequest &type, os_offset_t offset, size_t len,
                          void *buf, buf_page_t *bpage)
 {
-	ut_ad(pending_io());
+	ut_ad(referenced());
 	ut_ad(offset % OS_FILE_LOG_BLOCK_SIZE == 0);
 	ut_ad((len % OS_FILE_LOG_BLOCK_SIZE) == 0);
 	ut_ad(fil_validate_skip());

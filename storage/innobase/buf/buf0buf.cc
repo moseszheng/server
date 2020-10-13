@@ -415,7 +415,7 @@ static bool buf_tmp_page_decrypt(byte* tmp_frame, byte* src_frame)
 static bool buf_page_decrypt_after_read(buf_page_t *bpage,
                                         const fil_node_t &node)
 {
-	ut_ad(node.space->pending_io());
+	ut_ad(node.space->referenced());
 	ut_ad(node.space->id == bpage->id().space());
 	const auto flags = node.space->flags;
 
@@ -475,7 +475,7 @@ decompress_with_slot:
 		slot->release();
 		ut_ad(!write_size
 		      || fil_page_type_validate(node.space, dst_frame));
-		ut_ad(node.space->pending_io());
+		ut_ad(node.space->referenced());
 		return write_size != 0;
 	}
 
@@ -516,7 +516,7 @@ decrypt_failed:
 		goto decompress;
 	}
 
-	ut_ad(node.space->pending_io());
+	ut_ad(node.space->referenced());
 	return true;
 }
 #endif /* !UNIV_INNOCHECKSUM */
@@ -4100,7 +4100,7 @@ after decryption normal page checksum does not match.
 static dberr_t buf_page_check_corrupt(buf_page_t *bpage,
                                       const fil_node_t &node)
 {
-	ut_ad(node.space->pending_io());
+	ut_ad(node.space->referenced());
 
 	byte* dst_frame = (bpage->zip.data) ? bpage->zip.data :
 		((buf_block_t*) bpage)->frame;

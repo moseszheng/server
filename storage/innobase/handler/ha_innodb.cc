@@ -17476,7 +17476,7 @@ innodb_make_page_dirty(THD*, st_mysql_sys_var*, void*, const void* save)
 	mtr_t		mtr;
 	ulong		space_id = *static_cast<const ulong*>(save);
 	mysql_mutex_unlock(&LOCK_global_system_variables);
-	fil_space_t*	space = fil_space_acquire_silent(space_id);
+	fil_space_t*	space = fil_space_t::acquire(space_id);
 
 	if (space == NULL) {
 func_exit_no_space:
@@ -17486,7 +17486,7 @@ func_exit_no_space:
 
 	if (srv_saved_page_number_debug >= space->size) {
 func_exit:
-		space->release();
+		space->release_for_io();
 		goto func_exit_no_space;
 	}
 

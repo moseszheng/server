@@ -796,7 +796,7 @@ static bool buf_flush_page(buf_page_t *bpage, bool lru, fil_space_t *space)
         (space == fil_system.temp_space));
   ut_ad(space->purpose == FIL_TYPE_TABLESPACE ||
         space->atomic_write_supported);
-  ut_ad(space->pending_io());
+  ut_ad(space->referenced());
 
   rw_lock_t *rw_lock;
 

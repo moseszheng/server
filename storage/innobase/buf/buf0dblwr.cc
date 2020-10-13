@@ -687,7 +687,7 @@ void buf_dblwr_t::add_to_batch(fil_space_t *space, const IORequest &request,
   ut_ad(request.bpage);
   ut_ad(request.bpage->in_file());
   ut_ad(space->id == request.bpage->id().space());
-  ut_ad(space->pending_io());
+  ut_ad(space->referenced());
   ut_ad(!srv_read_only_mode);
 
   const ulint buf_size= 2 * block_size();

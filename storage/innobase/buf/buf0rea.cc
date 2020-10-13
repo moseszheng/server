@@ -402,7 +402,7 @@ buf_read_ahead_random(const page_id_t page_id, ulint zip_size, bool ibuf)
   if (buf_pool.n_pend_reads > buf_pool.curr_size / BUF_READ_AHEAD_PEND_LIMIT)
     return 0;
 
-  fil_space_t* space= fil_space_acquire(page_id.space());
+  fil_space_t* space= fil_space_t::acquire(page_id.space());
   if (!space)
     return 0;
 
@@ -427,11 +427,11 @@ buf_read_ahead_random(const page_id_t page_id, ulint zip_size, bool ibuf)
   }
 
 no_read_ahead:
-  space->release();
+  space->release_for_io();
   return 0;
 
 read_ahead:
-  if (!space->acquire_for_io())
+  if (!space->acquire_for_io_if_not_stopped())
     goto no_read_ahead;
 
   /* Read all the suitable blocks within the area */
@@ -452,7 +452,6 @@ read_ahead:
 			  count, space->chain.start->name,
 			  low.page_no()));
   space->release_for_io();
-  space->release();
 
   /* Read ahead is considered one I/O operation for the purpose of
   LRU policy decision. */
@@ -476,22 +475,13 @@ after decryption normal page checksum does not match.
 @retval DB_TABLESPACE_DELETED if tablespace .ibd file is missing */
 dberr_t buf_read_page(const page_id_t page_id, ulint zip_size)
 {
-  fil_space_t* space= fil_space_acquire(page_id.space());
+  fil_space_t *space= fil_space_t::acquire(page_id.space());
   if (!space)
   {
     ib::info() << "trying to read page " << page_id
                << " in nonexisting or being-dropped tablespace";
     return DB_TABLESPACE_DELETED;
   }
-  else if (!space->acquire_for_io())
-  {
-    ib::warn() << "unable to read " << page_id << " from tablespace "
-               << space->name;
-    space->release();
-    return DB_PAGE_CORRUPTED;
-  }
-
-  space->release();
 
   dberr_t err;
   if (buf_read_page_low(&err, space, true, BUF_READ_ANY_PAGE,
@@ -605,16 +595,9 @@ buf_read_ahead_linear(const page_id_t page_id, ulint zip_size, bool ibuf)
     read-ahead, as that could break the ibuf page access order */
     return 0;
 
-  fil_space_t *space= fil_space_acquire(page_id.space());
+  fil_space_t *space= fil_space_t::acquire(page_id.space());
   if (!space)
     return 0;
-  else
-  {
-    bool ok= space->acquire_for_io();
-    space->release();
-    if (!ok)
-      return 0;
-  }
 
   if (high_1.page_no() > space->last_page_number())
   {
