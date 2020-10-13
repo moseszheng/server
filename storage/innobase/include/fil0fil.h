@@ -332,13 +332,14 @@ enum fil_encryption_t
   FIL_ENCRYPTION_OFF
 };
 
-struct fil_space_t : ilist_node<unflushed_spaces_tag_t>,
-                     ilist_node<rotation_list_tag_t>
+struct fil_space_t final :
+  ilist_node<unflushed_spaces_tag_t>, ilist_node<rotation_list_tag_t>
 #else
-struct fil_space_t
+struct fil_space_t final
 #endif
 {
 #ifndef UNIV_INNOCHECKSUM
+  friend fil_node_t;
 	ulint		id;	/*!< space id */
 	hash_node_t	hash;	/*!< hash chain node */
 	char*		name;	/*!< Tablespace name */
@@ -370,15 +371,11 @@ struct fil_space_t
 	uint32_t	n_reserved_extents;
 				/*!< number of reserved free extents for
 				ongoing operations like B-tree page split */
-	uint32_t	n_pending_flushes; /*!< this is positive when flushing
-				the tablespace to disk; dropping of the
-				tablespace is forbidden if this is positive */
 private:
   /** the committed size of the tablespace in pages */
   Atomic_relaxed<uint32_t> committed_size;
   /** Number of pending operations on the file.
-  The tablespace cannot be dropped while this is nonzero.
-  The most significant bits are the STOPPING and CLOSING flags. */
+  The tablespace cannot be freed while (n_pending & PENDING) != 0. */
   std::atomic<uint32_t> n_pending;
   /** Flag in n_pending that indicates that the tablespace is being
   deleted, and no further operations should be performed */
@@ -387,8 +384,11 @@ private:
   for being closed, and fil_node_t::is_open() can only be trusted after
   acquiring fil_system.mutex and resetting the flag */
   static constexpr uint32_t CLOSING= 1U << 30;
+  /** Flag in n_pending that indicates that the tablespace needs fsync().
+  This must be the least significant flag bit; @see release_flush() */
+  static constexpr uint32_t NEEDS_FSYNC= 1U << 29;
   /** The reference count */
-  static constexpr uint32_t PENDING= ~(STOPPING | CLOSING);
+  static constexpr uint32_t PENDING= ~(STOPPING | CLOSING | NEEDS_FSYNC);
 public:
 	rw_lock_t	latch;	/*!< latch protecting the file space storage
 				allocation */
@@ -558,26 +558,48 @@ public:
     ut_ad(n & PENDING);
     return (n & PENDING) == 1;
   }
+
+  /** Clear the NEEDS_FSYNC flag */
+  void clear_flush()
+  { n_pending.fetch_and(~NEEDS_FSYNC, std::memory_order_release); }
+
 private:
-  /** @return pending operations (and CLOSING or STOPPING flags) */
-  uint32_t pending() const { return n_pending.load(std::memory_order_acquire); }
+  /** @return pending operations (and flags) */
+  uint32_t pending()const { return n_pending.load(std::memory_order_acquire); }
 public:
   /** @return whether close() of the file handle has been requested */
   bool is_closing() const { return pending() & CLOSING; }
   /** @return whether the tablespace is going to be dropped */
   bool is_stopping() const { return pending() & STOPPING; }
   /** @return number of pending operations */
-  bool is_ready_to_close() const { return (pending() & ~STOPPING) == CLOSING; }
+  bool is_ready_to_close() const
+  { return (pending() & (PENDING | CLOSING)) == CLOSING; }
+  /** @return whether fsync() or similar is needed */
+  bool needs_flush() const { return pending() & NEEDS_FSYNC; }
+  /** @return whether fsync() or similar is needed, and the tablespace is
+  not being dropped  */
+  bool needs_flush_not_stopping() const
+  { return (pending() & (NEEDS_FSYNC | STOPPING)) == NEEDS_FSYNC; }
 
   uint32_t referenced() const { return pending() & PENDING; }
-
+private:
   MY_ATTRIBUTE((warn_unused_result))
   /** Prepare to close the file handle.
-  @return number of pending operations */
+  @return number of pending operations, possibly with NEEDS_FSYNC flag */
   uint32_t set_closing()
   {
-    return n_pending.fetch_or(CLOSING, std::memory_order_acquire) & PENDING;
+    return n_pending.fetch_or(CLOSING, std::memory_order_acquire) &
+      (PENDING | NEEDS_FSYNC);
   }
+
+public:
+  /** Try to close a file to adhere to the innodb_open_files limit.
+  @param print_info   whether to diagnose why a file cannot be closed
+  @return whether a file was closed */
+  static bool try_to_close(bool print_info);
+
+  /** Close all tablespace files at shutdown */
+  static void close_all();
 
   /** @return last_freed_lsn */
   lsn_t get_last_freed_lsn() { return last_freed_lsn; }
@@ -586,6 +608,23 @@ public:
   {
     std::lock_guard<std::mutex> freed_lock(freed_range_mutex);
     last_freed_lsn= lsn;
+  }
+
+  /** Note that the file will need fsync().
+  @return whether this needs to be added to fil_system.unflushed_spaces */
+  bool set_needs_flush()
+  {
+    uint32_t n= 1;
+    while (!n_pending.compare_exchange_strong(n, n | NEEDS_FSYNC,
+                                              std::memory_order_acquire,
+                                              std::memory_order_relaxed))
+    {
+      ut_ad(n & PENDING);
+      if (n & (NEEDS_FSYNC | STOPPING))
+        return false;
+    }
+
+    return true;
   }
 
   /** Clear all freed ranges for undo tablespace when InnoDB
@@ -943,8 +982,10 @@ public:
   @return status and file descriptor */
   fil_io_t io(const IORequest &type, os_offset_t offset, size_t len,
               void *buf, buf_page_t *bpage= nullptr);
-  /** Flush pending writes from the file system cache to the file */
-  void flush();
+  /** Flush pending writes from the file system cache to the file. */
+  inline void flush();
+  /** Flush pending writes from the file system cache to the file. */
+  void flush_low();
 
   /** Read the first page of a data file.
   @return whether the page was found valid */
@@ -971,7 +1012,8 @@ private:
 #define	FIL_SPACE_MAGIC_N	89472
 
 /** File node of a tablespace or the log data space */
-struct fil_node_t {
+struct fil_node_t final
+{
 	/** tablespace containing this file */
 	fil_space_t*	space;
 	/** file name; protected by fil_system.mutex and log_sys.mutex. */
@@ -991,12 +1033,8 @@ struct fil_node_t {
 	uint32_t	init_size;
 	/** maximum size of the file in database pages (0 if unlimited) */
 	uint32_t	max_size;
-	/** count of pending flushes; is_open must be true if nonzero */
-	ulint		n_pending_flushes;
 	/** whether the file is currently being extended */
 	Atomic_relaxed<bool> being_extended;
-	/** whether this file had writes after lasy fsync() */
-	bool		needs_flush;
 	/** link to other files in this tablespace */
 	UT_LIST_NODE_T(fil_node_t) chain;
 
@@ -1034,7 +1072,7 @@ struct fil_node_t {
   /** Prepare to free a file from fil_system.
   @param detach_handle whether to detach instead of closing a handle
   @return detached handle or OS_FILE_CLOSED */
-  pfs_os_file_t close_to_free(bool detach_handle= false);
+  inline pfs_os_file_t close_to_free(bool detach_handle= false);
 
   /** Update the data structures on write completion */
   inline void complete_write();
@@ -1282,7 +1320,7 @@ inline uint16_t fil_page_get_type(const byte *page)
 #ifndef UNIV_INNOCHECKSUM
 
 /** Number of pending tablespace flushes */
-extern ulint	fil_n_pending_tablespace_flushes;
+extern Atomic_counter<ulint> fil_n_pending_tablespace_flushes;
 
 /** Look up a tablespace.
 The caller should hold an InnoDB table lock or a MDL that prevents
@@ -1356,12 +1394,8 @@ public:
 	fil_space_t*	temp_space;	/*!< The innodb_temporary tablespace */
   /** Map of fil_space_t::id to fil_space_t* */
   hash_table_t spaces;
-	sized_ilist<fil_space_t, unflushed_spaces_tag_t> unflushed_spaces;
-					/*!< list of those
-					tablespaces whose files contain
-					unflushed writes; those spaces have
-					at least one file node where
-					needs_flush == true */
+  /** tablespaces for which fil_space_t::needs_flush() holds */
+  sized_ilist<fil_space_t, unflushed_spaces_tag_t> unflushed_spaces;
   /** number of currently open files; protected by mutex */
   ulint n_open;
 	ulint		max_assigned_id;/*!< maximum space id in the existing
@@ -1426,6 +1460,21 @@ inline void fil_space_t::set_stopping(bool stopping)
   ut_ad(!(n & STOPPING) == stopping);
 }
 
+/** Flush pending writes from the file system cache to the file. */
+inline void fil_space_t::flush()
+{
+  ut_ad(!mutex_own(&fil_system.mutex));
+
+  ut_ad(purpose == FIL_TYPE_TABLESPACE || purpose == FIL_TYPE_IMPORT);
+  if (srv_file_flush_method == SRV_O_DIRECT_NO_FSYNC)
+  {
+    ut_ad(!is_in_unflushed_spaces);
+    ut_ad(!needs_flush());
+  }
+  else
+    flush_low();
+}
+
 /** @return the size in pages (0 if unreadable) */
 inline ulint fil_space_t::get_size()
 {
@@ -1468,8 +1517,6 @@ fil_space_free(
 void fil_space_set_recv_size_and_flags(ulint id, uint32_t size,
                                        uint32_t flags);
 
-/** Close all tablespace files at shutdown */
-void fil_close_all_files();
 /*******************************************************************//**
 Sets the max tablespace id counter if the given number is bigger than the
 previous value. */

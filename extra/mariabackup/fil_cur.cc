@@ -93,7 +93,6 @@ xb_fil_node_close_file(
 	mutex_enter(&fil_system.mutex);
 
 	ut_ad(node);
-	ut_a(node->n_pending_flushes == 0);
 	ut_a(!node->being_extended);
 
 	if (!node->is_open()) {
