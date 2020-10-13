@@ -623,7 +623,12 @@ retry:
 			node->is_raw_disk
 			? OS_FILE_OPEN_RAW | OS_FILE_ON_ERROR_NO_EXIT
 			: OS_FILE_OPEN | OS_FILE_ON_ERROR_NO_EXIT,
-			OS_FILE_AIO, OS_DATA_FILE, read_only_mode, &success);
+			OS_FILE_AIO,
+			(FSP_FLAGS_GET_ZIP_SSIZE(space->flags) != 0
+				? OS_DATA_FILE_NO_O_DIRECT
+				: OS_DATA_FILE),
+			read_only_mode,
+			&success);
 
 		if (!success) {
 			/* The following call prints an error message */
@@ -654,7 +659,12 @@ retry:
 			node->is_raw_disk
 			? OS_FILE_OPEN_RAW | OS_FILE_ON_ERROR_NO_EXIT
 			: OS_FILE_OPEN | OS_FILE_ON_ERROR_NO_EXIT,
-			OS_FILE_AIO, OS_DATA_FILE, read_only_mode, &success);
+			OS_FILE_AIO,
+			(FSP_FLAGS_GET_ZIP_SSIZE(space->flags) != 0
+				? OS_DATA_FILE_NO_O_DIRECT
+				: OS_DATA_FILE),
+			read_only_mode,
+			&success);
 	}
 
 	if (space->purpose != FIL_TYPE_LOG) {
