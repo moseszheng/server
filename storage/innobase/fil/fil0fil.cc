@@ -498,15 +498,11 @@ inline void fil_space_t::flush_low()
   {
     if (n & STOPPING)
       return;
-    if (n & NEEDS_FSYNC)
-    {
-      if (n_pending.fetch_add(1, std::memory_order_acquire) & STOPPING)
-      {
-        n_pending.fetch_sub(1, std::memory_order_release);
-	return;
-      }
-      break;
-    }
+    if (!(n & NEEDS_FSYNC))
+      continue;
+    if (acquire_low() & STOPPING)
+      return;
+    break;
   }
 
   fil_n_pending_tablespace_flushes++;
@@ -552,7 +548,7 @@ fil_space_extend_must_retry(
 	ut_ad(UT_LIST_GET_LAST(space->chain) == node);
 	ut_ad(size >= FIL_IBD_FILE_INITIAL_SIZE);
 	ut_ad(node->space == space);
-	ut_ad(space->referenced());
+	ut_ad(space->referenced() || space->is_being_truncated);
 
 	*success = space->size >= size;
 
@@ -710,18 +706,18 @@ clear:
 bool fil_space_extend(fil_space_t *space, uint32_t size)
 {
   ut_ad(!srv_read_only_mode || space->purpose == FIL_TYPE_TEMPORARY);
-  if (!space->acquire_for_io())
-    return false;
-
-  bool success;
-
-  do
-    mutex_enter(&fil_system.mutex);
-  while (fil_space_extend_must_retry(space, UT_LIST_GET_LAST(space->chain),
-                                     size, &success));
-
+  bool success= false;
+  const bool acquired= space->acquire_for_io();
+  mutex_enter(&fil_system.mutex);
+  if (acquired || space->is_being_truncated)
+  {
+    while (fil_space_extend_must_retry(space, UT_LIST_GET_LAST(space->chain),
+                                       size, &success))
+      mutex_enter(&fil_system.mutex);
+  }
   mutex_exit(&fil_system.mutex);
-  space->release_for_io();
+  if (acquired)
+    space->release_for_io();
   return success;
 }
 
@@ -1097,8 +1093,11 @@ bool fil_space_t::read_page0()
     return false;
   ut_ad(!UT_LIST_GET_NEXT(chain, node));
 
-  ut_d(uint32_t n=) n_pending.fetch_add(1, std::memory_order_acquire);
-  ut_ad(!(n & STOPPING));
+  if (UNIV_UNLIKELY(acquire_low() & STOPPING))
+  {
+    ut_ad("this should not happen" == 0);
+    return false;
+  }
   const bool ok= node->is_open() || fil_node_open_file(node);
   release_for_io();
   return ok;
@@ -1458,11 +1457,12 @@ fil_space_t *fil_space_t::get_for_io(ulint id)
 
   fil_space_t *space= fil_space_get_by_id(id);
 
-  uint32_t f= space
-    ? space->n_pending.fetch_add(1, std::memory_order_relaxed)
-    : 0;
+  uint32_t f= space ? space->acquire_low() : 0;
 
   mutex_exit(&fil_system.mutex);
+
+  if (f & STOPPING)
+    return nullptr;
 
   if ((f & CLOSING) && !space->prepare_for_io())
   {

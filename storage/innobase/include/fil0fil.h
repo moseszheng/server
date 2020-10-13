@@ -543,8 +543,10 @@ public:
   @return whether the file is usable */
   bool acquire_for_io()
   {
-    uint32_t n= n_pending.fetch_add(1, std::memory_order_acquire);
-    return UNIV_LIKELY(!(n & CLOSING)) || prepare_for_io();
+    uint32_t n= acquire_low();
+    if (UNIV_LIKELY(!(n & (STOPPING | CLOSING))))
+      return true;
+    return UNIV_LIKELY(!(n & STOPPING)) && prepare_for_io();
   }
 
   /** Acquire another tablespace reference for I/O. */
